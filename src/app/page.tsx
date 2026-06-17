@@ -1,10 +1,13 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
+  AlertTriangle,
   ArrowRight,
+  ExternalLink,
   Flame,
   RadioTower,
+  RefreshCw,
   Send,
   ShieldCheck,
   Sparkles,
@@ -13,10 +16,15 @@ import {
 } from "lucide-react";
 
 type HotItem = {
+  id: string;
   title: string;
-  heat: number;
+  score: number | null;
+  scoreLabel: string;
   summary: string;
   source: string;
+  category: string;
+  publishedAtLabel: string;
+  url?: string;
 };
 
 type Message = {
@@ -24,36 +32,7 @@ type Message = {
   content: string;
 };
 
-const hotItems: HotItem[] = [
-  {
-    title: "多模态 Agent 竞速升温，实时视觉推理进入产品战场",
-    heat: 98,
-    summary:
-      "头部实验室开始把实时视觉、工具调用与长上下文压进同一条工作流，开发者侧的自动化边界继续外扩。",
-    source: "AI HOT / Model Pulse",
-  },
-  {
-    title: "开源小模型继续逼近端侧部署临界点",
-    heat: 91,
-    summary:
-      "轻量推理、低显存微调与本地隐私场景正在形成新的独立开发者机会窗口。",
-    source: "Edge Intelligence Wire",
-  },
-  {
-    title: "RAG 工作流从检索问答转向行动编排",
-    heat: 87,
-    summary:
-      "新一代知识系统不再只回答问题，而是把搜索、筛选、规划和执行串成可观测任务链。",
-    source: "Vector Matrix",
-  },
-  {
-    title: "AI 编程工具进入多人协作与仓库级理解阶段",
-    heat: 84,
-    summary:
-      "代码助手正在从补全器演化为工程代理，能读取上下文、生成补丁并参与验证门。",
-    source: "Builder Terminal",
-  },
-];
+type HotFeedStatus = "idle" | "loading" | "success" | "error";
 
 const initialMessages: Message[] = [
   {
@@ -63,10 +42,230 @@ const initialMessages: Message[] = [
   },
 ];
 
+const categoryLabels: Record<string, string> = {
+  "ai-models": "模型发布/更新",
+  "ai-products": "产品发布/更新",
+  industry: "行业动态",
+  paper: "论文研究",
+  tip: "技巧与观点",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractItems(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (!isRecord(payload)) {
+    return [];
+  }
+
+  for (const key of ["items", "data", "results", "list"]) {
+    const value = payload[key];
+
+    if (Array.isArray(value)) {
+      return value;
+    }
+
+    if (isRecord(value)) {
+      const nestedItems = extractItems(value);
+      if (nestedItems.length > 0) {
+        return nestedItems;
+      }
+    }
+  }
+
+  return [];
+}
+
+function pickString(
+  record: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+
+    if (isRecord(value)) {
+      const nestedValue = pickString(value, ["name", "title", "label"]);
+      if (nestedValue) {
+        return nestedValue;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function pickNumber(
+  record: Record<string, unknown>,
+  keys: string[],
+): number | null {
+  for (const key of keys) {
+    const value = record[key];
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.min(100, Math.round(value)));
+    }
+
+    if (typeof value === "string" && value.trim()) {
+      const parsedValue = Number.parseFloat(value);
+      if (Number.isFinite(parsedValue)) {
+        return Math.max(0, Math.min(100, Math.round(parsedValue)));
+      }
+    }
+  }
+
+  return null;
+}
+
+function formatSignalTime(value?: string): string {
+  if (!value) {
+    return "LIVE FEED";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "TIME SIGNAL";
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+
+  if (diffMs >= 0 && diffMs < hour) {
+    return `${Math.max(1, Math.floor(diffMs / minute))} 分钟前`;
+  }
+
+  if (diffMs >= 0 && diffMs < 24 * hour) {
+    return `${Math.floor(diffMs / hour)} 小时前`;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatSyncTime(value: Date | null): string {
+  if (!value) {
+    return "PENDING";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
+function normalizeHotItem(rawItem: unknown, index: number): HotItem {
+  const item = isRecord(rawItem) ? rawItem : {};
+  const title =
+    pickString(item, ["title", "title_zh", "name", "headline"]) ??
+    "UNTITLED MATRIX SIGNAL";
+  const summary =
+    pickString(item, ["summary", "description", "desc", "abstract", "content"]) ??
+    "该条目暂无摘要，等待外脑完成语义解码。";
+  const source =
+    pickString(item, ["source", "sourceName", "siteName", "publisher", "author"]) ??
+    "AI HOT";
+  const categoryKey = pickString(item, ["category", "section", "type"]) ?? "";
+  const publishedAt = pickString(item, [
+    "publishedAt",
+    "published_at",
+    "createdAt",
+    "updatedAt",
+    "date",
+    "time",
+  ]);
+  const score = pickNumber(item, ["score", "heat", "hotScore", "rankScore"]);
+  const publishedAtLabel = formatSignalTime(publishedAt);
+  const category = categoryLabels[categoryKey] ?? (categoryKey || "AI 动态");
+
+  return {
+    id:
+      pickString(item, ["id", "slug", "url", "sourceUrl"]) ??
+      `aihot-signal-${index}`,
+    title,
+    score,
+    scoreLabel: score === null ? publishedAtLabel : `${score}`,
+    summary,
+    source,
+    category,
+    publishedAtLabel,
+    url: pickString(item, ["url", "sourceUrl", "link", "href"]),
+  };
+}
+
 export default function Home() {
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
+  const [hotFeedStatus, setHotFeedStatus] = useState<HotFeedStatus>("idle");
+  const [hotFeedError, setHotFeedError] = useState("");
+  const [hotItems, setHotItems] = useState<HotItem[]>([]);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+
+  const syncHotFeed = useCallback(async (signal?: AbortSignal) => {
+    setHotFeedStatus("loading");
+    setHotFeedError("");
+
+    try {
+      const response = await fetch("/api/api/aihot?mode=selected", {
+        signal,
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("AI HOT upstream returned a non-OK response.");
+      }
+
+      const payload: unknown = await response.json();
+      const nextItems = extractItems(payload).map(normalizeHotItem);
+
+      if (nextItems.length === 0) {
+        throw new Error("AI HOT payload did not contain renderable items.");
+      }
+
+      setHotItems(nextItems);
+      setLastSyncedAt(new Date());
+      setHotFeedStatus("success");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+
+      setHotFeedError(
+        error instanceof Error ? error.message : "Unknown AI HOT fetch failure.",
+      );
+      setHotFeedStatus("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      void syncHotFeed(controller.signal);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [syncHotFeed]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -87,6 +286,8 @@ export default function Home() {
     ]);
     setInput("");
   }
+
+  const isHotFeedLoading = hotFeedStatus === "loading";
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#080808] text-[#00f0ff]">
@@ -143,11 +344,15 @@ export default function Home() {
           <div className="grid grid-cols-3 gap-2 text-xs font-bold uppercase text-[#00f0ff] sm:text-sm">
             <div className="border border-[#00f0ff]/40 px-3 py-2">
               HOT FEED
-              <span className="block text-[#fcee0a]">MOCK</span>
+              <span className="block text-[#fcee0a]">
+                {hotFeedStatus === "success" ? "LIVE" : "SYNCING"}
+              </span>
             </div>
             <div className="border border-[#00f0ff]/40 px-3 py-2">
-              RAG CORE
-              <span className="block text-[#fcee0a]">STANDBY</span>
+              LAST SYNC
+              <span className="block text-[#fcee0a]">
+                {formatSyncTime(lastSyncedAt)}
+              </span>
             </div>
             <div className="border border-[#00f0ff]/40 px-3 py-2">
               VECTOR DB
@@ -158,46 +363,119 @@ export default function Home() {
 
         <div className="grid min-h-[calc(100vh-170px)] gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
           <section className="border border-[#00f0ff]/45 bg-[#080808]/88 shadow-[0_0_28px_rgba(0,240,255,0.12)]">
-            <div className="flex items-center justify-between border-b border-[#00f0ff]/35 px-5 py-4">
+            <div className="flex flex-col gap-4 border-b border-[#00f0ff]/35 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
               <h3 className="flex items-center gap-3 text-2xl font-black uppercase text-[#fcee0a]">
                 <Flame className="size-7" />
                 AI 前沿热点大厅
               </h3>
-              <span className="flex items-center gap-2 text-xs font-bold uppercase text-[#00f0ff]">
-                <RadioTower className="size-4 animate-pulse" />
-                AIHOT CONTAINER READY
-              </span>
-            </div>
-            <div className="grid gap-4 p-5 xl:grid-cols-2">
-              {hotItems.map((item) => (
-                <article
-                  key={item.title}
-                  className="cyber-card group border border-[#00f0ff]/35 bg-black/45 p-5 transition duration-300 hover:border-[#fcee0a] hover:shadow-[0_0_26px_rgba(252,238,10,0.22)]"
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <span className="flex items-center gap-2 text-xs font-bold uppercase text-[#00f0ff]">
+                  <RadioTower className="size-4 animate-pulse" />
+                  AIHOT DATA STREAM ONLINE
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void syncHotFeed()}
+                  disabled={isHotFeedLoading}
+                  className="matrix-button inline-flex items-center justify-center gap-2 border border-[#fcee0a] px-4 py-2 text-xs font-black uppercase text-[#fcee0a] transition hover:bg-[#fcee0a] hover:text-[#080808] disabled:cursor-wait disabled:opacity-60"
                 >
-                  <div className="mb-5 flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-2 text-xs font-black uppercase text-[#00f0ff]">
-                      <Sparkles className="size-4" />
-                      {item.source}
-                    </div>
-                    <div className="flex min-w-20 items-center justify-center gap-1 border border-[#fcee0a] px-2 py-1 text-sm font-black text-[#fcee0a]">
-                      <Zap className="size-4" />
-                      {item.heat}
-                    </div>
-                  </div>
-                  <h4 className="text-2xl font-black leading-tight text-[#fcee0a] transition group-hover:text-[#080808] group-hover:[text-shadow:0_0_12px_#fcee0a]">
-                    {item.title}
-                  </h4>
-                  <p className="mt-4 text-base leading-7 text-[#9ffbff]">
-                    {item.summary}
+                  <RefreshCw
+                    className={`size-4 ${isHotFeedLoading ? "animate-spin" : ""}`}
+                  />
+                  [ SYNC DATA / 刷新数据流 ]
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 p-5 xl:grid-cols-2">
+              {isHotFeedLoading && hotItems.length === 0 ? (
+                <div className="data-loader cyber-card xl:col-span-2 border border-[#00f0ff]/45 bg-black/60 p-8 text-center">
+                  <p className="text-2xl font-black uppercase text-[#fcee0a]">
+                    [ DOWNLOADING DATA STREAM... ]
                   </p>
-                  <div className="mt-6 h-2 border border-[#00f0ff]/30 bg-[#00f0ff]/10">
-                    <div
-                      className="h-full bg-[#fcee0a] shadow-[0_0_14px_rgba(252,238,10,0.85)]"
-                      style={{ width: `${item.heat}%` }}
-                    />
-                  </div>
-                </article>
-              ))}
+                  <p className="mt-4 text-base font-bold uppercase text-[#00f0ff]">
+                    [ DECRYPTING MATRIX DATABASE... 0%... 45%... 100% ]
+                  </p>
+                </div>
+              ) : null}
+
+              {hotFeedStatus === "error" ? (
+                <div className="cyber-card xl:col-span-2 border border-[#ff003c] bg-[#160006]/80 p-8 text-center shadow-[0_0_26px_rgba(255,0,60,0.22)]">
+                  <AlertTriangle className="mx-auto mb-4 size-10 text-[#ff003c]" />
+                  <p className="text-xl font-black uppercase text-[#ff003c] drop-shadow-[0_0_16px_rgba(255,0,60,0.8)]">
+                    [ ERROR: SIGNAL LOST. CONNECTION TO AI-HOT SERVER FAILED. ]
+                  </p>
+                  <p className="mt-3 text-sm text-[#ff9cb1]">{hotFeedError}</p>
+                  <button
+                    type="button"
+                    onClick={() => void syncHotFeed()}
+                    className="matrix-button mt-6 inline-flex items-center gap-2 border border-[#ff003c] px-5 py-3 text-sm font-black uppercase text-[#ff003c] transition hover:bg-[#ff003c] hover:text-[#080808]"
+                  >
+                    <RefreshCw className="size-4" />
+                    [ RETRY / 重新连接 ]
+                  </button>
+                </div>
+              ) : null}
+
+              {hotFeedStatus === "success" && hotItems.length === 0 ? (
+                <div className="cyber-card xl:col-span-2 border border-[#00f0ff]/45 bg-black/60 p-8 text-center text-xl font-black uppercase text-[#00f0ff]">
+                  [ NO SIGNALS DECODED. TRY SYNC DATA. ]
+                </div>
+              ) : null}
+
+              {hotItems.map((item) => {
+                const CardTag = item.url ? "a" : "article";
+                const scoreWidth = `${item.score ?? 64}%`;
+
+                return (
+                  <CardTag
+                    key={item.id}
+                    href={item.url}
+                    target={item.url ? "_blank" : undefined}
+                    rel={item.url ? "noreferrer" : undefined}
+                    className="cyber-card group block border border-[#00f0ff]/35 bg-black/45 p-5 transition duration-300 hover:border-[#fcee0a] hover:shadow-[0_0_26px_rgba(252,238,10,0.22)]"
+                  >
+                    <div className="mb-5 flex items-start justify-between gap-4">
+                      <div className="flex flex-col gap-2 text-xs font-black uppercase text-[#00f0ff]">
+                        <span className="flex items-center gap-2">
+                          <Sparkles className="size-4" />
+                          {item.source}
+                        </span>
+                        <span className="text-[#9ffbff]">{item.category}</span>
+                      </div>
+                      <div className="flex min-w-20 items-center justify-center gap-1 border border-[#fcee0a] px-2 py-1 text-sm font-black text-[#fcee0a]">
+                        {item.score === null ? (
+                          <RadioTower className="size-4" />
+                        ) : (
+                          <Zap className="size-4" />
+                        )}
+                        {item.scoreLabel}
+                      </div>
+                    </div>
+                    <h4 className="text-2xl font-black leading-tight text-[#fcee0a] transition group-hover:drop-shadow-[0_0_12px_rgba(252,238,10,0.9)]">
+                      {item.title}
+                    </h4>
+                    <p className="mt-4 text-base leading-7 text-[#9ffbff]">
+                      {item.summary}
+                    </p>
+                    <div className="mt-6 flex items-center justify-between gap-4 text-xs font-black uppercase text-[#00f0ff]">
+                      <span>{item.publishedAtLabel}</span>
+                      {item.url ? (
+                        <span className="flex items-center gap-1 text-[#fcee0a]">
+                          SOURCE
+                          <ExternalLink className="size-3.5" />
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-4 h-2 border border-[#00f0ff]/30 bg-[#00f0ff]/10">
+                      <div
+                        className="h-full bg-[#fcee0a] shadow-[0_0_14px_rgba(252,238,10,0.85)]"
+                        style={{ width: scoreWidth }}
+                      />
+                    </div>
+                  </CardTag>
+                );
+              })}
             </div>
           </section>
 
