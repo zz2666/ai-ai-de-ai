@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -28,7 +28,7 @@ type HotItem = {
 };
 
 type Message = {
-  role: "system" | "user";
+  role: "system" | "user" | "assistant";
   content: string;
 };
 
@@ -38,7 +38,7 @@ const initialMessages: Message[] = [
   {
     role: "system",
     content:
-      "TERMINAL ONLINE. AI 问答舱已挂载 Mock 推理核心，等待你的第一条指令。",
+      "TERMINAL ONLINE. OneAPI 流式链路已挂载，等待你的第一条指令。",
   },
 ];
 
@@ -210,6 +210,46 @@ function normalizeHotItem(rawItem: unknown, index: number): HotItem {
   };
 }
 
+function extractStreamContent(rawChunk: string): string {
+  let content = "";
+
+  for (const line of rawChunk.split("\n")) {
+    const trimmedLine = line.trim();
+
+    if (!trimmedLine.startsWith("data:")) {
+      continue;
+    }
+
+    const data = trimmedLine.slice(5).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+
+    try {
+      const payload = JSON.parse(data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+          };
+          message?: {
+            content?: string;
+          };
+          text?: string;
+        }>;
+      };
+
+      for (const choice of payload.choices ?? []) {
+        content +=
+          choice.delta?.content ?? choice.message?.content ?? choice.text ?? "";
+      }
+    } catch {
+      content += data;
+    }
+  }
+
+  return content;
+}
+
 export default function Home() {
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -218,6 +258,8 @@ export default function Home() {
   const [hotFeedError, setHotFeedError] = useState("");
   const [hotItems, setHotItems] = useState<HotItem[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const syncHotFeed = useCallback(async (signal?: AbortSignal) => {
     setHotFeedStatus("loading");
@@ -267,24 +309,123 @@ export default function Home() {
     };
   }, [syncHotFeed]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    chatScrollRef.current?.scrollTo({
+      top: chatScrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages, isChatStreaming]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const nextMessage = input.trim();
-    if (!nextMessage) {
+    if (!nextMessage || isChatStreaming) {
       return;
     }
 
+    const userMessage: Message = { role: "user", content: nextMessage };
+    const assistantMessage: Message = { role: "assistant", content: "" };
+    const requestMessages = [...messages, userMessage]
+      .filter((message) => message.role !== "system" || message.content.trim())
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
+
     setMessages((currentMessages) => [
       ...currentMessages,
-      { role: "user", content: nextMessage },
-      {
-        role: "system",
-        content:
-          "Mock Core: 已捕获你的指令。真实 AI HOT 数据流与外脑模型 API 将在后续阶段接入。",
-      },
+      userMessage,
+      assistantMessage,
     ]);
     setInput("");
+    setIsChatStreaming(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: requestMessages,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        const errorPayload = await response.text().catch(() => "");
+        throw new Error(errorPayload || "AI gateway stream failed.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        const nextContent = extractStreamContent(chunk);
+
+        if (!nextContent) {
+          continue;
+        }
+
+        setMessages((currentMessages) => {
+          const nextMessages = [...currentMessages];
+          const lastMessage = nextMessages[nextMessages.length - 1];
+
+          if (lastMessage?.role === "assistant") {
+            nextMessages[nextMessages.length - 1] = {
+              ...lastMessage,
+              content: lastMessage.content + nextContent,
+            };
+          }
+
+          return nextMessages;
+        });
+      }
+
+      const tail = decoder.decode();
+      const tailContent = extractStreamContent(tail);
+
+      if (tailContent) {
+        setMessages((currentMessages) => {
+          const nextMessages = [...currentMessages];
+          const lastMessage = nextMessages[nextMessages.length - 1];
+
+          if (lastMessage?.role === "assistant") {
+            nextMessages[nextMessages.length - 1] = {
+              ...lastMessage,
+              content: lastMessage.content + tailContent,
+            };
+          }
+
+          return nextMessages;
+        });
+      }
+    } catch (error) {
+      setMessages((currentMessages) => {
+        const nextMessages = [...currentMessages];
+        const lastMessage = nextMessages[nextMessages.length - 1];
+
+        if (lastMessage?.role === "assistant") {
+          nextMessages[nextMessages.length - 1] = {
+            ...lastMessage,
+            content: `[ ERROR: AI STREAM DISCONNECTED. ${
+              error instanceof Error ? error.message : "UNKNOWN FAILURE"
+            } ]`,
+          };
+        }
+
+        return nextMessages;
+      });
+    } finally {
+      setIsChatStreaming(false);
+    }
   }
 
   const isHotFeedLoading = hotFeedStatus === "loading";
@@ -486,24 +627,39 @@ export default function Home() {
                 AI 问答舱
               </h3>
               <span className="border border-[#00f0ff]/45 px-3 py-1 text-xs font-black uppercase text-[#00f0ff]">
-                TERMINAL v1.0
+                {isChatStreaming ? "STREAMING" : "TERMINAL v1.0"}
               </span>
             </div>
 
-            <div className="flex-1 space-y-4 overflow-y-auto p-5">
+            <div
+              ref={chatScrollRef}
+              className="flex-1 space-y-4 overflow-y-auto p-5"
+            >
               {messages.map((message, index) => (
                 <div
                   key={`${message.role}-${index}-${message.content}`}
                   className={`border px-4 py-3 text-sm leading-6 ${
                     message.role === "user"
                       ? "ml-8 border-[#fcee0a]/70 bg-[#fcee0a] text-[#080808]"
-                      : "mr-8 border-[#00f0ff]/45 bg-[#00191c] text-[#b7feff]"
+                      : message.role === "assistant"
+                        ? "mr-8 border-[#fcee0a]/55 bg-[#1d1a00] text-[#fff7a6]"
+                        : "mr-8 border-[#00f0ff]/45 bg-[#00191c] text-[#b7feff]"
                   }`}
                 >
                   <span className="mb-1 block text-xs font-black uppercase">
-                    {message.role === "user" ? "YOU" : "SYSTEM"}
+                    {message.role === "user"
+                      ? "YOU"
+                      : message.role === "assistant"
+                        ? "AI CORE"
+                        : "SYSTEM"}
                   </span>
-                  {message.content}
+                  {message.role === "assistant" && !message.content ? (
+                    <span className="terminal-thinking">
+                      [ TERMINAL THINKING... ]
+                    </span>
+                  ) : (
+                    message.content
+                  )}
                 </div>
               ))}
             </div>
@@ -515,15 +671,19 @@ export default function Home() {
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
+                disabled={isChatStreaming}
                 className="min-w-0 flex-1 border border-[#00f0ff]/45 bg-[#080808] px-4 py-3 text-sm font-bold text-[#00f0ff] outline-none transition placeholder:text-[#00f0ff]/45 focus:border-[#fcee0a] focus:shadow-[0_0_18px_rgba(252,238,10,0.28)]"
                 placeholder="输入指令，审问 AI 矩阵..."
               />
               <button
                 type="submit"
-                className="grid size-12 place-items-center border border-[#fcee0a] bg-[#fcee0a] text-[#080808] transition hover:bg-[#080808] hover:text-[#fcee0a] hover:shadow-[0_0_22px_rgba(252,238,10,0.65)]"
+                disabled={isChatStreaming}
+                className="grid size-12 place-items-center border border-[#fcee0a] bg-[#fcee0a] text-[#080808] transition hover:bg-[#080808] hover:text-[#fcee0a] hover:shadow-[0_0_22px_rgba(252,238,10,0.65)] disabled:cursor-wait disabled:opacity-60"
                 aria-label="发送消息"
               >
-                <Send className="size-5" />
+                <Send
+                  className={`size-5 ${isChatStreaming ? "animate-pulse" : ""}`}
+                />
               </button>
             </form>
           </aside>

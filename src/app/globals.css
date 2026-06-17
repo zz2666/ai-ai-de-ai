@@ -135,6 +135,12 @@ input {
   z-index: 1;
 }
 
+.terminal-thinking {
+  animation: terminal-thinking 1s steps(2, end) infinite;
+  color: #fcee0a;
+  text-shadow: 0 0 14px rgba(252, 238, 10, 0.8);
+}
+
 @keyframes flicker {
   0%,
   18%,
@@ -195,5 +201,15 @@ input {
   }
   to {
     transform: translateX(100%);
+  }
+}
+
+@keyframes terminal-thinking {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
   }
 }
