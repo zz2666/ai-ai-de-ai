@@ -14,6 +14,7 @@ import {
   Terminal,
   Zap,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 type HotItem = {
   id: string;
@@ -30,9 +31,12 @@ type HotItem = {
 type Message = {
   role: "system" | "user" | "assistant";
   content: string;
+  tone?: "error";
 };
 
 type HotFeedStatus = "idle" | "loading" | "success" | "error";
+
+const CHAT_REQUEST_TIMEOUT_MS = 15_000;
 
 const initialMessages: Message[] = [
   {
@@ -250,6 +254,63 @@ function extractStreamContent(rawChunk: string): string {
   return content;
 }
 
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="terminal-markdown">
+      <ReactMarkdown
+        components={{
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#00f0ff] underline-offset-4 transition hover:text-[#fcee0a] hover:underline hover:drop-shadow-[0_0_10px_rgba(252,238,10,0.75)]"
+            >
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function getChatErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return "[ NEON RED ALERT: AI CORE RESPONSE TIMEOUT. 15S HARD BREAKER TRIPPED. MATRIX CHANNEL RELEASED. ]";
+  }
+
+  return `[ NEON RED ALERT: AI STREAM DISCONNECTED. ${
+    error instanceof Error ? error.message : "UNKNOWN FAILURE"
+  } ]`;
+}
+
+async function readChatErrorMessage(response: Response): Promise<string> {
+  const errorPayload = await response.text().catch(() => "");
+
+  if (!errorPayload) {
+    return "AI gateway stream failed.";
+  }
+
+  try {
+    const parsedPayload: unknown = JSON.parse(errorPayload);
+
+    if (isRecord(parsedPayload)) {
+      const errorMessage = pickString(parsedPayload, ["error", "message"]);
+
+      if (errorMessage) {
+        return errorMessage;
+      }
+    }
+  } catch {
+    return errorPayload;
+  }
+
+  return errorPayload;
+}
+
 export default function Home() {
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -258,7 +319,7 @@ export default function Home() {
   const [hotFeedError, setHotFeedError] = useState("");
   const [hotItems, setHotItems] = useState<HotItem[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const syncHotFeed = useCallback(async (signal?: AbortSignal) => {
@@ -314,13 +375,13 @@ export default function Home() {
       top: chatScrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, isChatStreaming]);
+  }, [messages, isLoading]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const nextMessage = input.trim();
-    if (!nextMessage || isChatStreaming) {
+    if (!nextMessage || isLoading) {
       return;
     }
 
@@ -339,11 +400,17 @@ export default function Home() {
       assistantMessage,
     ]);
     setInput("");
-    setIsChatStreaming(true);
+    setIsLoading(true);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, CHAT_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
         },
@@ -353,8 +420,7 @@ export default function Home() {
       });
 
       if (!response.ok || !response.body) {
-        const errorPayload = await response.text().catch(() => "");
-        throw new Error(errorPayload || "AI gateway stream failed.");
+        throw new Error(await readChatErrorMessage(response));
       }
 
       const reader = response.body.getReader();
@@ -408,6 +474,8 @@ export default function Home() {
         });
       }
     } catch (error) {
+      const errorMessage = getChatErrorMessage(error);
+
       setMessages((currentMessages) => {
         const nextMessages = [...currentMessages];
         const lastMessage = nextMessages[nextMessages.length - 1];
@@ -415,16 +483,16 @@ export default function Home() {
         if (lastMessage?.role === "assistant") {
           nextMessages[nextMessages.length - 1] = {
             ...lastMessage,
-            content: `[ ERROR: AI STREAM DISCONNECTED. ${
-              error instanceof Error ? error.message : "UNKNOWN FAILURE"
-            } ]`,
+            content: errorMessage,
+            tone: "error",
           };
         }
 
         return nextMessages;
       });
     } finally {
-      setIsChatStreaming(false);
+      window.clearTimeout(timeoutId);
+      setIsLoading(false);
     }
   }
 
@@ -627,7 +695,7 @@ export default function Home() {
                 AI 问答舱
               </h3>
               <span className="border border-[#00f0ff]/45 px-3 py-1 text-xs font-black uppercase text-[#00f0ff]">
-                {isChatStreaming ? "STREAMING" : "TERMINAL v1.0"}
+                {isLoading ? "STREAMING" : "TERMINAL v1.0"}
               </span>
             </div>
 
@@ -639,11 +707,13 @@ export default function Home() {
                 <div
                   key={`${message.role}-${index}-${message.content}`}
                   className={`border px-4 py-3 text-sm leading-6 ${
-                    message.role === "user"
-                      ? "ml-8 border-[#fcee0a]/70 bg-[#fcee0a] text-[#080808]"
-                      : message.role === "assistant"
-                        ? "mr-8 border-[#fcee0a]/55 bg-[#1d1a00] text-[#fff7a6]"
-                        : "mr-8 border-[#00f0ff]/45 bg-[#00191c] text-[#b7feff]"
+                    message.tone === "error"
+                      ? "mr-8 border-[#ff003c] bg-[#160006] font-black uppercase text-[#ff003c] shadow-[0_0_24px_rgba(255,0,60,0.28)] drop-shadow-[0_0_12px_rgba(255,0,60,0.78)]"
+                      : message.role === "user"
+                        ? "ml-8 border-[#fcee0a]/70 bg-[#fcee0a] text-[#080808]"
+                        : message.role === "assistant"
+                          ? "mr-8 border-[#fcee0a]/55 bg-[#1d1a00] text-[#fff7a6]"
+                          : "mr-8 border-[#00f0ff]/45 bg-[#00191c] text-[#b7feff]"
                   }`}
                 >
                   <span className="mb-1 block text-xs font-black uppercase">
@@ -657,6 +727,9 @@ export default function Home() {
                     <span className="terminal-thinking">
                       [ TERMINAL THINKING... ]
                     </span>
+                  ) : message.role === "assistant" ||
+                    message.role === "system" ? (
+                    <MarkdownMessage content={message.content} />
                   ) : (
                     message.content
                   )}
@@ -671,18 +744,18 @@ export default function Home() {
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                disabled={isChatStreaming}
+                disabled={isLoading}
                 className="min-w-0 flex-1 border border-[#00f0ff]/45 bg-[#080808] px-4 py-3 text-sm font-bold text-[#00f0ff] outline-none transition placeholder:text-[#00f0ff]/45 focus:border-[#fcee0a] focus:shadow-[0_0_18px_rgba(252,238,10,0.28)]"
                 placeholder="输入指令，审问 AI 矩阵..."
               />
               <button
                 type="submit"
-                disabled={isChatStreaming}
+                disabled={isLoading}
                 className="grid size-12 place-items-center border border-[#fcee0a] bg-[#fcee0a] text-[#080808] transition hover:bg-[#080808] hover:text-[#fcee0a] hover:shadow-[0_0_22px_rgba(252,238,10,0.65)] disabled:cursor-wait disabled:opacity-60"
                 aria-label="发送消息"
               >
                 <Send
-                  className={`size-5 ${isChatStreaming ? "animate-pulse" : ""}`}
+                  className={`size-5 ${isLoading ? "animate-pulse" : ""}`}
                 />
               </button>
             </form>
