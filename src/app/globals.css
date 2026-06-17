@@ -1,0 +1,170 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #080808;
+  --foreground: #00f0ff;
+  --cyber-yellow: #fcee0a;
+  --cyber-cyan: #00f0ff;
+  --font-geist-sans: Arial, Helvetica, sans-serif;
+  --font-geist-mono: "Courier New", Consolas, monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  min-height: 100vh;
+  background: #080808;
+  color: #00f0ff;
+  font-family: var(--font-geist-mono), "Courier New", monospace;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: #fcee0a;
+  color: #080808;
+}
+
+.gate-panel {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(252, 238, 10, 0.12), transparent 28%),
+    radial-gradient(circle at 50% 68%, rgba(0, 240, 255, 0.1), transparent 36%);
+}
+
+.flicker-badge {
+  animation: flicker 3.8s infinite;
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+}
+
+.glitch-title {
+  position: relative;
+  animation: neon-glow 2.4s ease-in-out infinite alternate;
+}
+
+.glitch-title::before,
+.glitch-title::after {
+  content: "AI AI 的 AI";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.glitch-title::before {
+  color: #00f0ff;
+  transform: translate(3px, 0);
+  clip-path: inset(0 0 58% 0);
+  animation: glitch-shift 2.2s infinite steps(2, end);
+  opacity: 0.72;
+}
+
+.glitch-title::after {
+  color: #ff003c;
+  transform: translate(-3px, 0);
+  clip-path: inset(45% 0 0 0);
+  animation: glitch-shift 2.7s infinite steps(2, end) reverse;
+  opacity: 0.55;
+}
+
+.matrix-button,
+.cyber-card {
+  clip-path: polygon(16px 0, 100% 0, 100% calc(100% - 16px), calc(100% - 16px) 100%, 0 100%, 0 16px);
+}
+
+.matrix-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.matrix-button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.58), transparent);
+  transform: translateX(-115%);
+  transition: transform 0.42s ease;
+}
+
+.matrix-button:hover::before {
+  transform: translateX(115%);
+}
+
+.matrix-button > * {
+  position: relative;
+  z-index: 1;
+}
+
+.scanline {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.035) 0,
+    rgba(255, 255, 255, 0.035) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+  mix-blend-mode: screen;
+  opacity: 0.26;
+}
+
+@keyframes flicker {
+  0%,
+  18%,
+  22%,
+  25%,
+  53%,
+  57%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 18px rgba(0, 240, 255, 0.42), 0 0 34px rgba(0, 240, 255, 0.24);
+  }
+  20%,
+  24%,
+  55% {
+    opacity: 0.62;
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.25);
+  }
+}
+
+@keyframes neon-glow {
+  from {
+    text-shadow:
+      0 0 14px rgba(252, 238, 10, 0.76),
+      0 0 34px rgba(252, 238, 10, 0.64),
+      0 0 64px rgba(252, 238, 10, 0.34);
+  }
+  to {
+    text-shadow:
+      0 0 20px rgba(252, 238, 10, 0.96),
+      0 0 54px rgba(252, 238, 10, 0.78),
+      0 0 94px rgba(0, 240, 255, 0.28);
+  }
+}
+
+@keyframes glitch-shift {
+  0%,
+  82%,
+  100% {
+    transform: translate(0, 0);
+  }
+  84% {
+    transform: translate(8px, -3px);
+  }
+  86% {
+    transform: translate(-7px, 2px);
+  }
+  88% {
+    transform: translate(5px, 4px);
+  }
+  90% {
+    transform: translate(-4px, -2px);
+  }
+}
