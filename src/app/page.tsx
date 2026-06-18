@@ -3,7 +3,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
-  ArrowRight,
   ExternalLink,
   Flame,
   RadioTower,
@@ -35,8 +34,11 @@ type Message = {
 };
 
 type HotFeedStatus = "idle" | "loading" | "success" | "error";
+type DeckTabId = "featured" | "models" | "research";
 
 const CHAT_REQUEST_TIMEOUT_MS = 15_000;
+const CRITICAL_BREAK_MESSAGE =
+  "⚠️ [CRITICAL_BREAK]: 死循环拦截成功，系统强行熔断";
 
 const initialMessages: Message[] = [
   {
@@ -53,6 +55,28 @@ const categoryLabels: Record<string, string> = {
   paper: "论文研究",
   tip: "技巧与观点",
 };
+
+const deckTabs: Array<{
+  id: DeckTabId;
+  label: string;
+  hint: string;
+}> = [
+  {
+    id: "featured",
+    label: "精选热点",
+    hint: "SELECTED",
+  },
+  {
+    id: "models",
+    label: "模型产品",
+    hint: "MODELS",
+  },
+  {
+    id: "research",
+    label: "研究观点",
+    hint: "RESEARCH",
+  },
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -277,13 +301,55 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
+function HotScreenshot({ url, title }: { url?: string; title: string }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  if (!url) {
+    return (
+      <div className="grid aspect-[16/7] place-items-center border border-cyan-500/15 bg-zinc-950 text-[10px] font-black uppercase tracking-[0.3em] text-cyan-300/50">
+        MATRIX SOURCE LOCKED
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative aspect-[16/7] overflow-hidden border border-cyan-500/20 bg-zinc-950">
+      {!isLoaded ? (
+        <div className="absolute inset-0 grid place-items-center bg-[linear-gradient(135deg,rgba(8,145,178,0.18),rgba(24,24,27,0.86)),repeating-linear-gradient(90deg,rgba(34,211,238,0.13)_0_1px,transparent_1px_9px)] text-xs font-black uppercase tracking-[0.28em] text-cyan-300">
+          矩阵注入中...
+        </div>
+      ) : null}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&embed=screenshot.url`}
+        alt={`${title} screenshot`}
+        className={`h-full w-full object-cover opacity-70 mix-blend-screen transition duration-500 ${
+          isLoaded ? "scale-100 opacity-80" : "scale-105 opacity-0"
+        }`}
+        onLoad={() => setIsLoaded(true)}
+      />
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.78))]" />
+    </div>
+  );
+}
+
 function getChatErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") {
     return "[ NEON RED ALERT: AI CORE RESPONSE TIMEOUT. 15S HARD BREAKER TRIPPED. MATRIX CHANNEL RELEASED. ]";
   }
 
+  const rawErrorMessage =
+    error instanceof Error ? error.message : "UNKNOWN FAILURE";
+
+  if (
+    rawErrorMessage.includes("检测到死循环风险") ||
+    rawErrorMessage.includes("SERVER_CIRCUIT_BREAKER_TRIGGERED")
+  ) {
+    return CRITICAL_BREAK_MESSAGE;
+  }
+
   return `[ NEON RED ALERT: AI STREAM DISCONNECTED. ${
-    error instanceof Error ? error.message : "UNKNOWN FAILURE"
+    rawErrorMessage
   } ]`;
 }
 
@@ -312,13 +378,14 @@ async function readChatErrorMessage(response: Response): Promise<string> {
 }
 
 export default function Home() {
-  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [activeDeckTab, setActiveDeckTab] = useState<DeckTabId>("featured");
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [hotFeedStatus, setHotFeedStatus] = useState<HotFeedStatus>("idle");
   const [hotFeedError, setHotFeedError] = useState("");
   const [hotItems, setHotItems] = useState<HotItem[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [armedInjectId, setArmedInjectId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -497,273 +564,374 @@ export default function Home() {
   }
 
   const isHotFeedLoading = hotFeedStatus === "loading";
+  const filteredHotItems = hotItems.filter((item) => {
+    if (activeDeckTab === "models") {
+      return /模型|产品|model|product/i.test(`${item.category} ${item.title}`);
+    }
+
+    if (activeDeckTab === "research") {
+      return /论文|研究|观点|技巧|paper|research|tip/i.test(
+        `${item.category} ${item.title}`,
+      );
+    }
+
+    return true;
+  });
+  const visibleHotItems =
+    filteredHotItems.length > 0 || activeDeckTab === "featured"
+      ? filteredHotItems
+      : hotItems;
+  const signalStatus =
+    hotFeedStatus === "success"
+      ? "STABLE"
+      : hotFeedStatus === "error"
+        ? "DEGRADED"
+        : "SYNCING";
+  const chatStatus = isLoading ? "STREAMING" : "READY";
+
+  function handleInjectHotItem(item: HotItem) {
+    setInput(
+      `请根据这条 AI HOT 热点继续分析：${item.title}\n\n${item.summary}`,
+    );
+    setArmedInjectId(item.id);
+    window.setTimeout(() => {
+      setArmedInjectId((currentId) => (currentId === item.id ? null : currentId));
+    }, 520);
+  }
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#080808] text-[#00f0ff]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(0,240,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(0,240,255,0.08)_1px,transparent_1px)] bg-[size:40px_40px]" />
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,240,255,0.16),transparent_42%),linear-gradient(180deg,transparent,rgba(8,8,8,0.86))]" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[#fcee0a] shadow-[0_0_24px_#fcee0a]" />
+    <main className="relative h-screen overflow-hidden bg-black text-cyan-300">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.07)_1px,transparent_1px)] bg-[size:34px_34px]" />
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-24 bg-[repeating-linear-gradient(180deg,rgba(34,211,238,0.16)_0_1px,transparent_1px_12px)] opacity-35" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-[repeating-linear-gradient(180deg,rgba(252,238,10,0.14)_0_1px,transparent_1px_14px)] opacity-30" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_10%,rgba(34,211,238,0.16),transparent_32%),radial-gradient(circle_at_80%_20%,rgba(217,70,239,0.12),transparent_28%),linear-gradient(180deg,rgba(0,0,0,0.12),rgba(0,0,0,0.92))]" />
 
-      <section
-        className={`gate-panel absolute inset-0 z-20 flex flex-col items-center justify-center px-5 text-center transition duration-700 ${
-          isDashboardOpen
-            ? "pointer-events-none scale-105 opacity-0"
-            : "scale-100 opacity-100"
-        }`}
-        aria-hidden={isDashboardOpen}
-      >
-        <p className="flicker-badge mb-9 border border-[#00f0ff]/70 px-6 py-3 text-lg font-black uppercase text-[#00f0ff] shadow-[0_0_26px_rgba(0,240,255,0.48)] sm:text-2xl">
-          CYBERSPACE SIGNAL LOCKED
-        </p>
-        <h1 className="glitch-title text-[clamp(5.2rem,16vw,15rem)] font-black uppercase leading-[0.82] text-[#fcee0a] drop-shadow-[0_0_34px_rgba(252,238,10,0.95)]">
-          <span aria-hidden="true">AI AI 的 AI</span>
-          <span className="sr-only">AI AI 的 AI</span>
-        </h1>
-        <p className="mt-11 max-w-6xl animate-pulse text-xl font-black uppercase text-[#00f0ff] drop-shadow-[0_0_18px_rgba(0,240,255,0.9)] sm:text-3xl lg:text-4xl">
-          MATRIX INITIALIZATION SUCCESSFUL. AWAITING SKILL INJECTION...
-        </p>
-        <button
-          type="button"
-          onClick={() => setIsDashboardOpen(true)}
-          className="matrix-button group mt-14 inline-flex min-h-16 items-center gap-4 border-2 border-[#fcee0a] bg-[#080808] px-7 py-4 text-base font-black uppercase text-[#fcee0a] shadow-[0_0_24px_rgba(252,238,10,0.38)] transition duration-300 hover:bg-[#fcee0a] hover:text-[#080808] hover:shadow-[0_0_42px_rgba(252,238,10,0.9)] sm:px-10 sm:text-2xl"
-        >
-          [ ENTER MATRIX / 初始化系统 ]
-          <ArrowRight className="size-6 transition group-hover:translate-x-1" />
-        </button>
-      </section>
-
-      <section
-        className={`relative z-10 min-h-screen px-4 py-5 transition duration-700 sm:px-6 lg:px-8 ${
-          isDashboardOpen
-            ? "translate-y-0 opacity-100"
-            : "translate-y-8 opacity-0"
-        }`}
-        aria-hidden={!isDashboardOpen}
-      >
-        <header className="mb-5 flex flex-col gap-4 border-b border-[#00f0ff]/35 pb-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="flex items-center gap-2 text-sm font-bold uppercase text-[#fcee0a]">
-              <ShieldCheck className="size-4" />
-              ACCESS GRANTED / MATRIX CORE ONLINE
+      <header className="relative z-10 flex h-16 items-center justify-between border-b border-cyan-500/25 bg-black/82 px-5 backdrop-blur-xl">
+        <div className="flex min-w-0 items-center gap-4">
+          <div className="grid size-9 place-items-center border border-[#fcee0a]/70 bg-[#fcee0a]/10 text-[#fcee0a] shadow-[0_0_18px_rgba(252,238,10,0.22)]">
+            <Sparkles className="size-5" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="truncate text-2xl font-black uppercase text-[#fcee0a] drop-shadow-[0_0_8px_#fcee0a]">
+              AI AI 的 AI
+            </h1>
+            <p className="hidden text-xs font-bold uppercase text-cyan-400/70 sm:block">
+              HOLOGRAPHIC OPS WORKBENCH
             </p>
-            <h2 className="mt-2 text-4xl font-black uppercase text-[#fcee0a] drop-shadow-[0_0_20px_rgba(252,238,10,0.65)] sm:text-6xl">
-              黑客控制台
-            </h2>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-xs font-bold uppercase text-[#00f0ff] sm:text-sm">
-            <div className="border border-[#00f0ff]/40 px-3 py-2">
-              HOT FEED
-              <span className="block text-[#fcee0a]">
-                {hotFeedStatus === "success" ? "LIVE" : "SYNCING"}
-              </span>
-            </div>
-            <div className="border border-[#00f0ff]/40 px-3 py-2">
-              LAST SYNC
-              <span className="block text-[#fcee0a]">
-                {formatSyncTime(lastSyncedAt)}
-              </span>
-            </div>
-            <div className="border border-[#00f0ff]/40 px-3 py-2">
-              VECTOR DB
-              <span className="block text-[#fcee0a]">PHASE 3</span>
-            </div>
-          </div>
-        </header>
+        </div>
 
-        <div className="grid min-h-[calc(100vh-170px)] gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <section className="border border-[#00f0ff]/45 bg-[#080808]/88 shadow-[0_0_28px_rgba(0,240,255,0.12)]">
-            <div className="flex flex-col gap-4 border-b border-[#00f0ff]/35 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
-              <h3 className="flex items-center gap-3 text-2xl font-black uppercase text-[#fcee0a]">
-                <Flame className="size-7" />
-                AI 前沿热点大厅
-              </h3>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <span className="flex items-center gap-2 text-xs font-bold uppercase text-[#00f0ff]">
-                  <RadioTower className="size-4 animate-pulse" />
-                  AIHOT DATA STREAM ONLINE
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void syncHotFeed()}
-                  disabled={isHotFeedLoading}
-                  className="matrix-button inline-flex items-center justify-center gap-2 border border-[#fcee0a] px-4 py-2 text-xs font-black uppercase text-[#fcee0a] transition hover:bg-[#fcee0a] hover:text-[#080808] disabled:cursor-wait disabled:opacity-60"
-                >
-                  <RefreshCw
-                    className={`size-4 ${isHotFeedLoading ? "animate-spin" : ""}`}
-                  />
-                  [ SYNC DATA / 刷新数据流 ]
-                </button>
+        <div className="flex shrink-0 items-center gap-3 text-xs font-black uppercase">
+          <div className="hidden border border-zinc-700 bg-zinc-950/80 px-3 py-2 text-cyan-300 sm:block">
+            LAST SYNC:{" "}
+            <span className="text-[#fcee0a]">{formatSyncTime(lastSyncedAt)}</span>
+          </div>
+          <div className="flex items-center gap-2 border border-emerald-400/55 bg-emerald-950/30 px-3 py-2 text-emerald-300 shadow-[0_0_14px_rgba(16,185,129,0.16)]">
+            <span className="size-2 animate-pulse bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.95)] [animation-duration:3s]" />
+            [ SIGNAL: {signalStatus} ]
+          </div>
+          <div className="flex items-center gap-2 border border-cyan-400/55 bg-cyan-950/20 px-3 py-2 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.18)]">
+            <ShieldCheck className="size-4" />
+            [ BREAKER: ARMED ]
+          </div>
+        </div>
+        <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-cyan-500 via-fuchsia-500 to-transparent" />
+      </header>
+
+      <section className="relative z-10 grid h-[calc(100vh-64px)] min-h-0 grid-rows-[minmax(0,46%)_minmax(0,54%)] overflow-hidden lg:grid-cols-[minmax(380px,48%)_minmax(0,1fr)] lg:grid-rows-1">
+        <section className="flex min-h-0 flex-col border-b border-cyan-900/70 bg-zinc-950/70 lg:border-b-0 lg:border-r">
+          <div className="border-b border-zinc-800/90 bg-black/65 px-4 py-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-xs font-black uppercase text-cyan-400">
+                  <Flame className="size-4 text-[#fcee0a]" />
+                  {"DATA_DECK // 热点矩阵源"}
+                </p>
+                <h2 className="mt-1 truncate text-lg font-black uppercase text-zinc-100">
+                  AI HOT SIGNAL MATRIX
+                </h2>
               </div>
+              <button
+                type="button"
+                onClick={() => void syncHotFeed()}
+                disabled={isHotFeedLoading}
+                className="matrix-button inline-flex h-10 shrink-0 items-center gap-2 border border-[#fcee0a]/70 bg-[#fcee0a]/10 px-3 text-xs font-black uppercase text-[#fcee0a] transition hover:bg-[#fcee0a] hover:text-black hover:shadow-[0_0_18px_rgba(252,238,10,0.55)] disabled:cursor-wait disabled:opacity-60"
+              >
+                <RefreshCw
+                  className={`size-4 ${isHotFeedLoading ? "animate-spin" : ""}`}
+                />
+                SYNC
+              </button>
             </div>
 
-            <div className="grid gap-4 p-5 xl:grid-cols-2">
-              {isHotFeedLoading && hotItems.length === 0 ? (
-                <div className="data-loader cyber-card xl:col-span-2 border border-[#00f0ff]/45 bg-black/60 p-8 text-center">
-                  <p className="text-2xl font-black uppercase text-[#fcee0a]">
-                    [ DOWNLOADING DATA STREAM... ]
-                  </p>
-                  <p className="mt-4 text-base font-bold uppercase text-[#00f0ff]">
-                    [ DECRYPTING MATRIX DATABASE... 0%... 45%... 100% ]
-                  </p>
-                </div>
-              ) : null}
-
-              {hotFeedStatus === "error" ? (
-                <div className="cyber-card xl:col-span-2 border border-[#ff003c] bg-[#160006]/80 p-8 text-center shadow-[0_0_26px_rgba(255,0,60,0.22)]">
-                  <AlertTriangle className="mx-auto mb-4 size-10 text-[#ff003c]" />
-                  <p className="text-xl font-black uppercase text-[#ff003c] drop-shadow-[0_0_16px_rgba(255,0,60,0.8)]">
-                    [ ERROR: SIGNAL LOST. CONNECTION TO AI-HOT SERVER FAILED. ]
-                  </p>
-                  <p className="mt-3 text-sm text-[#ff9cb1]">{hotFeedError}</p>
-                  <button
-                    type="button"
-                    onClick={() => void syncHotFeed()}
-                    className="matrix-button mt-6 inline-flex items-center gap-2 border border-[#ff003c] px-5 py-3 text-sm font-black uppercase text-[#ff003c] transition hover:bg-[#ff003c] hover:text-[#080808]"
-                  >
-                    <RefreshCw className="size-4" />
-                    [ RETRY / 重新连接 ]
-                  </button>
-                </div>
-              ) : null}
-
-              {hotFeedStatus === "success" && hotItems.length === 0 ? (
-                <div className="cyber-card xl:col-span-2 border border-[#00f0ff]/45 bg-black/60 p-8 text-center text-xl font-black uppercase text-[#00f0ff]">
-                  [ NO SIGNALS DECODED. TRY SYNC DATA. ]
-                </div>
-              ) : null}
-
-              {hotItems.map((item) => {
-                const CardTag = item.url ? "a" : "article";
-                const scoreWidth = `${item.score ?? 64}%`;
+            <div className="grid grid-cols-3 gap-2">
+              {deckTabs.map((tab) => {
+                const isActive = activeDeckTab === tab.id;
 
                 return (
-                  <CardTag
-                    key={item.id}
-                    href={item.url}
-                    target={item.url ? "_blank" : undefined}
-                    rel={item.url ? "noreferrer" : undefined}
-                    className="cyber-card group block border border-[#00f0ff]/35 bg-black/45 p-5 transition duration-300 hover:border-[#fcee0a] hover:shadow-[0_0_26px_rgba(252,238,10,0.22)]"
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveDeckTab(tab.id)}
+                    className={`h-11 border px-2 text-xs font-black uppercase transition ${
+                      isActive
+                        ? "border-cyan-300 bg-gradient-to-r from-cyan-500 to-blue-600 text-black shadow-[0_0_18px_rgba(34,211,238,0.35)]"
+                        : "border-zinc-800 bg-zinc-900/80 text-zinc-400 hover:border-cyan-500/70 hover:text-cyan-300"
+                    }`}
                   >
-                    <div className="mb-5 flex items-start justify-between gap-4">
-                      <div className="flex flex-col gap-2 text-xs font-black uppercase text-[#00f0ff]">
-                        <span className="flex items-center gap-2">
-                          <Sparkles className="size-4" />
-                          {item.source}
-                        </span>
-                        <span className="text-[#9ffbff]">{item.category}</span>
-                      </div>
-                      <div className="flex min-w-20 items-center justify-center gap-1 border border-[#fcee0a] px-2 py-1 text-sm font-black text-[#fcee0a]">
-                        {item.score === null ? (
-                          <RadioTower className="size-4" />
-                        ) : (
-                          <Zap className="size-4" />
-                        )}
-                        {item.scoreLabel}
-                      </div>
-                    </div>
-                    <h4 className="text-2xl font-black leading-tight text-[#fcee0a] transition group-hover:drop-shadow-[0_0_12px_rgba(252,238,10,0.9)]">
-                      {item.title}
-                    </h4>
-                    <p className="mt-4 text-base leading-7 text-[#9ffbff]">
-                      {item.summary}
-                    </p>
-                    <div className="mt-6 flex items-center justify-between gap-4 text-xs font-black uppercase text-[#00f0ff]">
-                      <span>{item.publishedAtLabel}</span>
-                      {item.url ? (
-                        <span className="flex items-center gap-1 text-[#fcee0a]">
-                          SOURCE
-                          <ExternalLink className="size-3.5" />
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-4 h-2 border border-[#00f0ff]/30 bg-[#00f0ff]/10">
-                      <div
-                        className="h-full bg-[#fcee0a] shadow-[0_0_14px_rgba(252,238,10,0.85)]"
-                        style={{ width: scoreWidth }}
-                      />
-                    </div>
-                  </CardTag>
+                    <span className="block truncate">[ {tab.label} ]</span>
+                    <span
+                      className={`block text-[10px] ${
+                        isActive ? "text-black/70" : "text-cyan-500/50"
+                      }`}
+                    >
+                      {tab.hint}
+                    </span>
+                  </button>
                 );
               })}
             </div>
-          </section>
+          </div>
 
-          <aside className="flex min-h-[640px] flex-col border border-[#fcee0a]/70 bg-black/78 shadow-[0_0_30px_rgba(252,238,10,0.16)]">
-            <div className="flex items-center justify-between border-b border-[#fcee0a]/40 px-5 py-4">
-              <h3 className="flex items-center gap-3 text-xl font-black uppercase text-[#fcee0a]">
-                <Terminal className="size-6" />
-                AI 问答舱
-              </h3>
-              <span className="border border-[#00f0ff]/45 px-3 py-1 text-xs font-black uppercase text-[#00f0ff]">
-                {isLoading ? "STREAMING" : "TERMINAL v1.0"}
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {isHotFeedLoading && hotItems.length === 0 ? (
+              <div className="data-loader cyber-card border border-cyan-500/35 bg-black/70 p-8 text-center">
+                <p className="text-lg font-black uppercase text-[#fcee0a]">
+                  [ DOWNLOADING DATA STREAM... ]
+                </p>
+                <p className="mt-4 text-sm font-bold uppercase text-cyan-300">
+                  矩阵注入中...
+                </p>
+              </div>
+            ) : null}
+
+            {hotFeedStatus === "error" ? (
+              <div className="cyber-card border border-rose-500/80 bg-rose-950/30 p-6 text-center shadow-[0_0_24px_rgba(244,63,94,0.22)]">
+                <AlertTriangle className="mx-auto mb-4 size-9 text-rose-500" />
+                <p className="text-base font-black uppercase text-rose-500">
+                  [ ERROR: SIGNAL LOST. AIHOT LINK FAILED. ]
+                </p>
+                <p className="mt-3 text-sm text-rose-200/80">{hotFeedError}</p>
+                <button
+                  type="button"
+                  onClick={() => void syncHotFeed()}
+                  className="matrix-button mt-5 inline-flex h-10 items-center gap-2 border border-rose-500 px-4 text-xs font-black uppercase text-rose-400 transition hover:bg-rose-500 hover:text-black"
+                >
+                  <RefreshCw className="size-4" />
+                  RETRY
+                </button>
+              </div>
+            ) : null}
+
+            {hotFeedStatus === "success" && visibleHotItems.length === 0 ? (
+              <div className="cyber-card border border-cyan-500/35 bg-black/70 p-8 text-center text-sm font-black uppercase text-cyan-300">
+                [ NO SIGNALS DECODED. TRY SYNC DATA. ]
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 xl:grid-cols-2">
+              {visibleHotItems.map((item) => {
+                const scoreWidth = `${item.score ?? 64}%`;
+                const isInjectArmed = armedInjectId === item.id;
+
+                return (
+                  <article
+                    key={item.id}
+                    className="cyber-card group relative overflow-hidden border border-zinc-800 bg-zinc-950/82 p-3 transition duration-300 hover:-translate-y-0.5 hover:border-cyan-400 hover:shadow-[0_0_15px_rgba(34,211,238,0.3)]"
+                  >
+                    <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent opacity-0 transition group-hover:opacity-100" />
+                    <HotScreenshot url={item.url} title={item.title} />
+
+                    <div className="mt-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0 text-[11px] font-black uppercase text-cyan-300">
+                        <span className="flex items-center gap-1">
+                          <RadioTower className="size-3.5" />
+                          {item.source}
+                        </span>
+                        <span className="mt-1 block truncate text-zinc-500">
+                          {`${item.category} // ${item.publishedAtLabel}`}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleInjectHotItem(item)}
+                        className={`grid size-9 shrink-0 place-items-center border text-cyan-300 transition hover:border-rose-400 hover:bg-rose-500 hover:text-black ${
+                          isInjectArmed
+                            ? "border-cyan-300 bg-rose-500 text-black shadow-[0_0_22px_rgba(34,211,238,0.65)] animate-pulse"
+                            : "border-cyan-500/45 bg-black/70"
+                        }`}
+                        style={{
+                          clipPath:
+                            "polygon(50% 0, 100% 50%, 50% 100%, 0 50%)",
+                        }}
+                        aria-label={`注入热点：${item.title}`}
+                        title="注入到指令输入框"
+                      >
+                        <Zap className="size-4" />
+                      </button>
+                    </div>
+
+                    <h3 className="mt-3 line-clamp-3 text-base font-black leading-snug text-zinc-100 transition group-hover:text-cyan-200 group-hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.65)]">
+                      {item.title}
+                    </h3>
+                    <p className="mt-2 line-clamp-4 text-sm leading-6 text-zinc-400">
+                      {item.summary}
+                    </p>
+
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <div className="h-1.5 flex-1 border border-cyan-500/20 bg-cyan-500/10">
+                        <div
+                          className="h-full bg-gradient-to-r from-cyan-400 to-[#fcee0a] shadow-[0_0_12px_rgba(34,211,238,0.7)]"
+                          style={{ width: scoreWidth }}
+                        />
+                      </div>
+                      <span className="shrink-0 text-xs font-black text-[#fcee0a]">
+                        {item.scoreLabel}
+                      </span>
+                    </div>
+
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex items-center gap-1 text-xs font-black uppercase text-cyan-400 transition hover:text-[#fcee0a]"
+                      >
+                        SOURCE
+                        <ExternalLink className="size-3.5" />
+                      </a>
+                    ) : null}
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        <aside className="flex min-h-0 flex-col border-t border-dashed border-cyan-900/80 bg-black/58 lg:border-l lg:border-t-0">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-cyan-900/70 bg-zinc-950/72 px-5">
+            <div className="flex items-center gap-3">
+              <span className="border border-cyan-500/45 bg-cyan-500/10 px-3 py-1 text-xs font-black uppercase text-cyan-300">
+                {"// TERMINAL_LOG_CORE"}
+              </span>
+              <span className="hidden text-xs font-black uppercase text-zinc-500 md:inline">
+                CHAT_STATUS:{" "}
+                <span className={isLoading ? "text-[#fcee0a]" : "text-cyan-300"}>
+                  {chatStatus}
+                </span>
               </span>
             </div>
+            <div className="flex items-center gap-2 text-xs font-black uppercase text-[#fcee0a]">
+              <Terminal className="size-4" />
+              COMMAND CORE
+            </div>
+          </div>
 
-            <div
-              ref={chatScrollRef}
-              className="flex-1 space-y-4 overflow-y-auto p-5"
-            >
-              {messages.map((message, index) => (
+          <div
+            ref={chatScrollRef}
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {messages.map((message, index) => {
+              if (message.role === "assistant" && !message.content) {
+                return null;
+              }
+
+              return (
                 <div
                   key={`${message.role}-${index}-${message.content}`}
-                  className={`border px-4 py-3 text-sm leading-6 ${
-                    message.tone === "error"
-                      ? "mr-8 border-[#ff003c] bg-[#160006] font-black uppercase text-[#ff003c] shadow-[0_0_24px_rgba(255,0,60,0.28)] drop-shadow-[0_0_12px_rgba(255,0,60,0.78)]"
-                      : message.role === "user"
-                        ? "ml-8 border-[#fcee0a]/70 bg-[#fcee0a] text-[#080808]"
-                        : message.role === "assistant"
-                          ? "mr-8 border-[#fcee0a]/55 bg-[#1d1a00] text-[#fff7a6]"
-                          : "mr-8 border-[#00f0ff]/45 bg-[#00191c] text-[#b7feff]"
+                  className={`animate-[hud-message-in_0.22s_ease-out] ${
+                    message.role === "user" ? "flex justify-end" : "flex justify-start"
                   }`}
                 >
-                  <span className="mb-1 block text-xs font-black uppercase">
-                    {message.role === "user"
-                      ? "YOU"
-                      : message.role === "assistant"
-                        ? "AI CORE"
-                        : "SYSTEM"}
-                  </span>
-                  {message.role === "assistant" && !message.content ? (
-                    <span className="terminal-thinking">
-                      [ TERMINAL THINKING... ]
+                  <div
+                    className={`max-w-[86%] border px-4 py-3 text-sm leading-6 shadow-lg ${
+                      message.tone === "error"
+                        ? "border-rose-500 bg-rose-950/35 font-black uppercase text-rose-500 shadow-[0_0_24px_rgba(244,63,94,0.2)]"
+                        : message.role === "user"
+                          ? "border-cyan-400/55 bg-cyan-950/25 text-cyan-100"
+                          : message.role === "assistant"
+                            ? "border-zinc-700 bg-zinc-900/80 text-zinc-100"
+                            : "border-[#fcee0a]/45 bg-[#fcee0a]/10 text-[#fcee0a]"
+                    }`}
+                  >
+                    <span className="mb-2 block text-[11px] font-black uppercase text-cyan-400/75">
+                      {message.role === "user"
+                        ? "PLAYER_INPUT"
+                        : message.role === "assistant"
+                          ? "AI_CORE_OUTPUT"
+                          : "SYSTEM_BOOT"}
                     </span>
-                  ) : message.role === "assistant" ||
-                    message.role === "system" ? (
-                    <MarkdownMessage content={message.content} />
-                  ) : (
-                    message.content
-                  )}
+                    {message.role === "assistant" || message.role === "system" ? (
+                      <MarkdownMessage content={message.content} />
+                    ) : (
+                      <span>{message.content}</span>
+                    )}
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
 
-            <form
-              onSubmit={handleSubmit}
-              className="flex gap-3 border-t border-[#fcee0a]/40 p-4"
-            >
+            {isLoading ? (
+              <div className="flex justify-start">
+                <div className="border border-cyan-500/45 bg-zinc-950/90 px-4 py-3 shadow-[0_0_22px_rgba(34,211,238,0.2)]">
+                  <div className="flex items-center gap-3">
+                    <span className="relative grid size-4 place-items-center">
+                      <span className="absolute size-3 animate-ping bg-cyan-400 opacity-70" />
+                      <span className="relative size-2 bg-[#fcee0a]" />
+                    </span>
+                    <span className="text-xs font-black uppercase text-cyan-300">
+                      [SYS_STATUS]: AI_THINKING_BY_MATRIX_LOOP...
+                    </span>
+                    <span className="grid size-7 place-items-center rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px animate-spin">
+                      <span className="size-5 rounded-full bg-black" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <form
+            onSubmit={handleSubmit}
+            className="shrink-0 border-t border-cyan-900/80 bg-zinc-950/85 p-4"
+          >
+            <div className="flex items-center gap-3 border border-cyan-500/35 bg-black/80 px-3 py-2 transition focus-within:border-cyan-300 focus-within:bg-cyan-950/20 focus-within:shadow-[0_0_26px_rgba(34,211,238,0.2)]">
+              <span className="animate-pulse text-2xl font-black text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.85)]">
+                &gt;
+              </span>
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 disabled={isLoading}
-                className="min-w-0 flex-1 border border-[#00f0ff]/45 bg-[#080808] px-4 py-3 text-sm font-bold text-[#00f0ff] outline-none transition placeholder:text-[#00f0ff]/45 focus:border-[#fcee0a] focus:shadow-[0_0_18px_rgba(252,238,10,0.28)]"
+                className="min-w-0 flex-1 bg-transparent px-1 py-3 text-sm font-bold text-cyan-100 outline-none placeholder:text-cyan-500/45 disabled:cursor-wait"
                 placeholder="输入指令，审问 AI 矩阵..."
               />
               <button
                 type="submit"
                 disabled={isLoading}
-                className="grid size-12 place-items-center border border-[#fcee0a] bg-[#fcee0a] text-[#080808] transition hover:bg-[#080808] hover:text-[#fcee0a] hover:shadow-[0_0_22px_rgba(252,238,10,0.65)] disabled:cursor-wait disabled:opacity-60"
+                className="grid size-11 shrink-0 place-items-center border border-[#fcee0a]/70 bg-[#fcee0a] text-black transition hover:bg-black hover:text-[#fcee0a] hover:shadow-[0_0_24px_rgba(252,238,10,0.85)] disabled:cursor-wait disabled:opacity-60"
                 aria-label="发送消息"
               >
-                <Send
-                  className={`size-5 ${isLoading ? "animate-pulse" : ""}`}
-                />
+                <Send className={`size-5 ${isLoading ? "animate-pulse" : ""}`} />
               </button>
-            </form>
-          </aside>
-        </div>
+            </div>
+          </form>
+        </aside>
       </section>
 
       <div className="scanline pointer-events-none absolute inset-0 z-30" />
+      <style jsx global>{`
+        @keyframes hud-message-in {
+          from {
+            opacity: 0;
+            transform: translateY(6px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      `}</style>
     </main>
   );
 }
