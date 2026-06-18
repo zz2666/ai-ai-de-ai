@@ -82,6 +82,130 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function toSafeText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (value instanceof Error) {
+    return value.message;
+  }
+
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+
+  try {
+    const serializedValue = JSON.stringify(value);
+    return serializedValue ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function toErrorText(error: unknown): string {
+  const errorText = toSafeText(error).trim();
+  return errorText || "UNKNOWN FAILURE";
+}
+
+function normalizeMessage(rawMessage: unknown): Message {
+  if (!isRecord(rawMessage)) {
+    return {
+      role: "assistant",
+      content: toSafeText(rawMessage),
+      tone: "error",
+    };
+  }
+
+  const rawRole = rawMessage.role;
+  const role =
+    rawRole === "system" || rawRole === "user" || rawRole === "assistant"
+      ? rawRole
+      : "assistant";
+  const tone = rawMessage.tone === "error" ? "error" : undefined;
+
+  return {
+    role,
+    content: toSafeText(rawMessage.content),
+    tone,
+  };
+}
+
+function extractTextFragment(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(extractTextFragment).join("");
+  }
+
+  if (isRecord(value)) {
+    return (
+      extractTextFragment(value.text) ||
+      extractTextFragment(value.content) ||
+      extractTextFragment(value.value)
+    );
+  }
+
+  return "";
+}
+
+function extractChoiceText(choice: unknown): string {
+  if (!isRecord(choice)) {
+    return "";
+  }
+
+  const deltaText = isRecord(choice.delta)
+    ? extractTextFragment(choice.delta.content)
+    : "";
+  const messageText = isRecord(choice.message)
+    ? extractTextFragment(choice.message.content)
+    : "";
+
+  return deltaText || messageText || extractTextFragment(choice.text);
+}
+
+function extractPayloadText(payload: unknown): string {
+  if (!isRecord(payload)) {
+    return "";
+  }
+
+  if (Array.isArray(payload.choices)) {
+    return payload.choices.map(extractChoiceText).join("");
+  }
+
+  const deltaText = isRecord(payload.delta)
+    ? extractTextFragment(payload.delta.content)
+    : "";
+  const messageText = isRecord(payload.message)
+    ? extractTextFragment(payload.message.content)
+    : "";
+
+  return (
+    deltaText ||
+    messageText ||
+    extractTextFragment(payload.content) ||
+    extractTextFragment(payload.text)
+  );
+}
+
 function extractItems(payload: unknown): unknown[] {
   if (Array.isArray(payload)) {
     return payload;
@@ -238,44 +362,50 @@ function normalizeHotItem(rawItem: unknown, index: number): HotItem {
   };
 }
 
-function extractStreamContent(rawChunk: string): string {
-  let content = "";
+type StreamParseResult = {
+  content: string;
+  isDone: boolean;
+  remainder: string;
+};
 
-  for (const line of rawChunk.split("\n")) {
+function extractStreamContent(rawChunk: string, flush = false): StreamParseResult {
+  let content = "";
+  let isDone = false;
+  const lines = rawChunk.split("\n");
+  const remainder = flush ? "" : lines.pop() ?? "";
+
+  for (const line of lines) {
     const trimmedLine = line.trim();
+
+    if (!trimmedLine) {
+      continue;
+    }
+
+    if (trimmedLine.includes("[DONE]") || trimmedLine.includes("data: [DONE]")) {
+      isDone = true;
+      break;
+    }
 
     if (!trimmedLine.startsWith("data:")) {
       continue;
     }
 
-    const data = trimmedLine.slice(5).trim();
-    if (!data || data === "[DONE]") {
-      continue;
+    const jsonStr = trimmedLine.replace(/^data:\s*/, "");
+    if (!jsonStr || jsonStr === "[DONE]" || jsonStr.includes("[DONE]")) {
+      isDone = true;
+      break;
     }
 
     try {
-      const payload = JSON.parse(data) as {
-        choices?: Array<{
-          delta?: {
-            content?: string;
-          };
-          message?: {
-            content?: string;
-          };
-          text?: string;
-        }>;
-      };
-
-      for (const choice of payload.choices ?? []) {
-        content +=
-          choice.delta?.content ?? choice.message?.content ?? choice.text ?? "";
-      }
-    } catch {
-      content += data;
+      const payload: unknown = JSON.parse(jsonStr);
+      content += extractPayloadText(payload);
+    } catch (error) {
+      console.warn("略过不完整的流数据行:", error);
+      continue;
     }
   }
 
-  return content;
+  return { content, isDone, remainder: isDone ? "" : remainder };
 }
 
 function MarkdownMessage({ content }: { content: string }) {
@@ -338,8 +468,7 @@ function getChatErrorMessage(error: unknown): string {
     return "矩阵安全熔断：大模型调用超过 90 秒未响应，已强制斩断断连，请点击重置";
   }
 
-  const rawErrorMessage =
-    error instanceof Error ? error.message : "UNKNOWN FAILURE";
+  const rawErrorMessage = toErrorText(error);
 
   if (
     rawErrorMessage.includes("检测到死循环风险") ||
@@ -348,9 +477,7 @@ function getChatErrorMessage(error: unknown): string {
     return CRITICAL_BREAK_MESSAGE;
   }
 
-  return `[ NEON RED ALERT: AI STREAM DISCONNECTED. ${
-    rawErrorMessage
-  } ]`;
+  return `[ NEON RED ALERT: AI STREAM DISCONNECTED. ${rawErrorMessage} ]`;
 }
 
 async function readChatErrorMessage(response: Response): Promise<string> {
@@ -389,10 +516,21 @@ export default function Home() {
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isFlashActive, setIsFlashActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const isLoadingRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
 
+  const setRequestLoading = useCallback((nextLoadingState: boolean) => {
+    isLoadingRef.current = nextLoadingState;
+    setIsLoading(nextLoadingState);
+  }, []);
+
   const syncHotFeed = useCallback(async (signal?: AbortSignal) => {
+    if (isLoadingRef.current) {
+      return;
+    }
+
+    setRequestLoading(true);
     setHotFeedStatus("loading");
     setHotFeedError("");
 
@@ -425,8 +563,10 @@ export default function Home() {
         error instanceof Error ? error.message : "Unknown AI HOT fetch failure.",
       );
       setHotFeedStatus("error");
+    } finally {
+      setRequestLoading(false);
     }
-  }, []);
+  }, [setRequestLoading]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -451,26 +591,28 @@ export default function Home() {
     event.preventDefault();
 
     const nextMessage = chatInput.trim();
-    if (!nextMessage || isLoading) {
+    if (!nextMessage || isLoading || isLoadingRef.current) {
       return;
     }
+
+    setRequestLoading(true);
 
     const userMessage: Message = { role: "user", content: nextMessage };
     const assistantMessage: Message = { role: "assistant", content: "" };
     const requestMessages = [...messages, userMessage]
+      .map(normalizeMessage)
       .filter((message) => message.role !== "system" || message.content.trim())
       .map((message) => ({
         role: message.role,
-        content: message.content,
+        content: toSafeText(message.content),
       }));
 
     setMessages((currentMessages) => [
-      ...currentMessages,
+      ...currentMessages.map(normalizeMessage),
       userMessage,
       assistantMessage,
     ]);
     setChatInput("");
-    setIsLoading(true);
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
@@ -495,74 +637,46 @@ export default function Home() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let pendingStreamText = "";
 
       while (true) {
-        const { done, value } = await reader.read();
+        try {
+          const { done, value } = await reader.read();
 
-        if (done) {
+          if (done) {
+            break;
+          }
+
+          const chunkText = decoder.decode(value, { stream: true });
+          const streamResult = extractStreamContent(
+            `${pendingStreamText}${chunkText}`,
+          );
+          pendingStreamText = streamResult.remainder;
+          appendAssistantContent(streamResult.content);
+
+          if (streamResult.isDone) {
+            break;
+          }
+        } catch (streamError) {
+          console.warn("流式读取异常，已安全终止:", streamError);
+          replaceAssistantWithError(streamError);
           break;
         }
-
-        const chunk = decoder.decode(value, { stream: true });
-        const nextContent = extractStreamContent(chunk);
-
-        if (!nextContent) {
-          continue;
-        }
-
-        setMessages((currentMessages) => {
-          const nextMessages = [...currentMessages];
-          const lastMessage = nextMessages[nextMessages.length - 1];
-
-          if (lastMessage?.role === "assistant") {
-            nextMessages[nextMessages.length - 1] = {
-              ...lastMessage,
-              content: lastMessage.content + nextContent,
-            };
-          }
-
-          return nextMessages;
-        });
       }
 
-      const tail = decoder.decode();
-      const tailContent = extractStreamContent(tail);
-
-      if (tailContent) {
-        setMessages((currentMessages) => {
-          const nextMessages = [...currentMessages];
-          const lastMessage = nextMessages[nextMessages.length - 1];
-
-          if (lastMessage?.role === "assistant") {
-            nextMessages[nextMessages.length - 1] = {
-              ...lastMessage,
-              content: lastMessage.content + tailContent,
-            };
-          }
-
-          return nextMessages;
-        });
+      try {
+        const tail = `${pendingStreamText}${decoder.decode()}`;
+        const tailContent = extractStreamContent(tail, true).content;
+        appendAssistantContent(tailContent);
+      } catch (streamError) {
+        console.warn("流式尾包解析异常，已安全终止:", streamError);
+        replaceAssistantWithError(streamError);
       }
     } catch (error) {
-      const errorMessage = getChatErrorMessage(error);
-
-      setMessages((currentMessages) => {
-        const nextMessages = [...currentMessages];
-        const lastMessage = nextMessages[nextMessages.length - 1];
-
-        if (lastMessage?.role === "assistant") {
-          nextMessages[nextMessages.length - 1] = {
-            ...lastMessage,
-            content: errorMessage,
-            tone: "error",
-          };
-        }
-
-        return nextMessages;
-      });
+      replaceAssistantWithError(error);
     } finally {
       window.clearTimeout(timeoutId);
-      setIsLoading(false);
+      setRequestLoading(false);
     }
   }
 
@@ -591,6 +705,47 @@ export default function Home() {
         ? "DEGRADED"
         : "SYNCING";
   const chatStatus = isLoading ? "STREAMING" : "READY";
+
+  function appendAssistantContent(content: unknown) {
+    const safeContent = toSafeText(content);
+
+    if (!safeContent) {
+      return;
+    }
+
+    setMessages((currentMessages) => {
+      const nextMessages = currentMessages.map(normalizeMessage);
+      const lastMessage = nextMessages[nextMessages.length - 1];
+
+      if (lastMessage?.role === "assistant") {
+        nextMessages[nextMessages.length - 1] = {
+          ...lastMessage,
+          content: `${toSafeText(lastMessage.content)}${safeContent}`,
+        };
+      }
+
+      return nextMessages;
+    });
+  }
+
+  function replaceAssistantWithError(error: unknown) {
+    const errorMessage = getChatErrorMessage(error);
+
+    setMessages((currentMessages) => {
+      const nextMessages = currentMessages.map(normalizeMessage);
+      const lastMessage = nextMessages[nextMessages.length - 1];
+
+      if (lastMessage?.role === "assistant") {
+        nextMessages[nextMessages.length - 1] = {
+          ...lastMessage,
+          content: errorMessage,
+          tone: "error",
+        };
+      }
+
+      return nextMessages;
+    });
+  }
 
   function handleInjectToChat(title: string, summary: string) {
     void summary;
@@ -863,39 +1018,45 @@ export default function Home() {
             className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 [scrollbar-color:#22d3ee_#09090b] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-cyan-400/35 [&::-webkit-scrollbar-track]:bg-zinc-950"
           >
             {messages.map((message, index) => {
-              if (message.role === "assistant" && !message.content) {
+              const safeMessage = normalizeMessage(message);
+              const safeContent = toSafeText(safeMessage.content);
+
+              if (safeMessage.role === "assistant" && !safeContent) {
                 return null;
               }
 
               return (
                 <div
-                  key={`${message.role}-${index}-${message.content}`}
+                  key={`${safeMessage.role}-${index}`}
                   className={`animate-[hud-message-in_0.22s_ease-out] ${
-                    message.role === "user" ? "flex justify-end" : "flex justify-start"
+                    safeMessage.role === "user"
+                      ? "flex justify-end"
+                      : "flex justify-start"
                   }`}
                 >
                   <div
                     className={`max-w-[86%] border px-4 py-3 text-sm leading-6 shadow-lg ${
-                      message.tone === "error"
+                      safeMessage.tone === "error"
                         ? "border-rose-500 bg-rose-950/35 font-black uppercase text-rose-500 shadow-[0_0_24px_rgba(244,63,94,0.2)]"
-                        : message.role === "user"
+                        : safeMessage.role === "user"
                           ? "border-cyan-400/55 bg-cyan-950/25 text-cyan-100"
-                          : message.role === "assistant"
+                          : safeMessage.role === "assistant"
                             ? "border-zinc-700 bg-zinc-900/80 text-zinc-100"
                             : "border-[#fcee0a]/45 bg-[#fcee0a]/10 text-[#fcee0a]"
                     }`}
                   >
                     <span className="mb-2 block text-[11px] font-black uppercase text-cyan-400/75">
-                      {message.role === "user"
+                      {safeMessage.role === "user"
                         ? "PLAYER_INPUT"
-                        : message.role === "assistant"
+                        : safeMessage.role === "assistant"
                           ? "AI_CORE_OUTPUT"
                           : "SYSTEM_BOOT"}
                     </span>
-                    {message.role === "assistant" || message.role === "system" ? (
-                      <MarkdownMessage content={message.content} />
+                    {safeMessage.role === "assistant" ||
+                    safeMessage.role === "system" ? (
+                      <MarkdownMessage content={safeContent} />
                     ) : (
-                      <span>{message.content}</span>
+                      <span>{safeContent}</span>
                     )}
                   </div>
                 </div>
