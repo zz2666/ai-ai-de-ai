@@ -638,6 +638,7 @@ export default function Home() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pendingStreamText = "";
+      let hasReceivedAssistantContent = false;
 
       while (true) {
         try {
@@ -653,13 +654,17 @@ export default function Home() {
           );
           pendingStreamText = streamResult.remainder;
           appendAssistantContent(streamResult.content);
+          hasReceivedAssistantContent =
+            hasReceivedAssistantContent || Boolean(streamResult.content);
 
           if (streamResult.isDone) {
             break;
           }
         } catch (streamError) {
           console.warn("流式读取异常，已安全终止:", streamError);
-          replaceAssistantWithError(streamError);
+          if (!hasReceivedAssistantContent) {
+            replaceAssistantWithError(streamError);
+          }
           break;
         }
       }
@@ -668,9 +673,13 @@ export default function Home() {
         const tail = `${pendingStreamText}${decoder.decode()}`;
         const tailContent = extractStreamContent(tail, true).content;
         appendAssistantContent(tailContent);
+        hasReceivedAssistantContent =
+          hasReceivedAssistantContent || Boolean(tailContent);
       } catch (streamError) {
         console.warn("流式尾包解析异常，已安全终止:", streamError);
-        replaceAssistantWithError(streamError);
+        if (!hasReceivedAssistantContent) {
+          replaceAssistantWithError(streamError);
+        }
       }
     } catch (error) {
       replaceAssistantWithError(error);

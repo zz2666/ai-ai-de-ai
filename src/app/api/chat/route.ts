@@ -4,6 +4,7 @@ const AIHOT_ITEMS_ENDPOINT = "https://aihot.virxact.com/api/public/items";
 const AIHOT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ai-ai-de-ai-tools/0.1.0";
 const HARD_TIMEOUT_MS = 15_000;
+const STREAM_TIMEOUT_MS = 90_000;
 const MAX_TOOL_API_CALLS = 3;
 const SERVER_CIRCUIT_BREAKER_ERROR = "SERVER_CIRCUIT_BREAKER_TRIGGERED";
 const EMPTY_SEARCH_MESSAGE = "历史上未找到相关热点。";
@@ -741,7 +742,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const streamTimeout = createTimeoutSignal();
+  const streamTimeout = createTimeoutSignal(STREAM_TIMEOUT_MS);
   let upstreamResponse: Response;
 
   try {
@@ -767,7 +768,7 @@ export async function POST(request: NextRequest) {
           ? "AI gateway stream timed out."
           : "AI gateway request failed.",
         detail: isAbortError(error)
-          ? "15 second hard breaker tripped."
+          ? "90 second stream breaker tripped."
           : error instanceof Error
             ? error.message
             : "Unknown AI gateway failure.",
@@ -789,16 +790,29 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const stream = upstreamResponse.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(chunk);
-      },
-      flush() {
+  const upstreamReader = upstreamResponse.body.getReader();
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await upstreamReader.read();
+
+        if (done) {
+          streamTimeout.clear();
+          controller.close();
+          return;
+        }
+
+        controller.enqueue(value);
+      } catch (error) {
         streamTimeout.clear();
-      },
-    }),
-  );
+        controller.error(error);
+      }
+    },
+    cancel() {
+      streamTimeout.clear();
+      void upstreamReader.cancel();
+    },
+  });
 
   return new Response(stream, {
     status: upstreamResponse.status,
