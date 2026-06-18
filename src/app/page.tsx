@@ -36,7 +36,7 @@ type Message = {
 type HotFeedStatus = "idle" | "loading" | "success" | "error";
 type DeckTabId = "featured" | "models" | "research";
 
-const CHAT_REQUEST_TIMEOUT_MS = 15_000;
+const CHAT_REQUEST_TIMEOUT_MS = 90_000;
 const CRITICAL_BREAK_MESSAGE =
   "⚠️ [CRITICAL_BREAK]: 死循环拦截成功，系统强行熔断";
 
@@ -335,7 +335,7 @@ function HotScreenshot({ url, title }: { url?: string; title: string }) {
 
 function getChatErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") {
-    return "[ NEON RED ALERT: AI CORE RESPONSE TIMEOUT. 15S HARD BREAKER TRIPPED. MATRIX CHANNEL RELEASED. ]";
+    return "矩阵安全熔断：大模型调用超过 90 秒未响应，已强制斩断断连，请点击重置";
   }
 
   const rawErrorMessage =
@@ -380,14 +380,17 @@ async function readChatErrorMessage(response: Response): Promise<string> {
 export default function Home() {
   const [activeDeckTab, setActiveDeckTab] = useState<DeckTabId>("featured");
   const [messages, setMessages] = useState<Message[]>(initialMessages);
-  const [input, setInput] = useState("");
+  const [chatInput, setChatInput] = useState("");
   const [hotFeedStatus, setHotFeedStatus] = useState<HotFeedStatus>("idle");
   const [hotFeedError, setHotFeedError] = useState("");
   const [hotItems, setHotItems] = useState<HotItem[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [armedInjectId, setArmedInjectId] = useState<string | null>(null);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [isFlashActive, setIsFlashActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
 
   const syncHotFeed = useCallback(async (signal?: AbortSignal) => {
     setHotFeedStatus("loading");
@@ -447,7 +450,7 @@ export default function Home() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const nextMessage = input.trim();
+    const nextMessage = chatInput.trim();
     if (!nextMessage || isLoading) {
       return;
     }
@@ -466,7 +469,7 @@ export default function Home() {
       userMessage,
       assistantMessage,
     ]);
-    setInput("");
+    setChatInput("");
     setIsLoading(true);
 
     const controller = new AbortController();
@@ -589,24 +592,30 @@ export default function Home() {
         : "SYNCING";
   const chatStatus = isLoading ? "STREAMING" : "READY";
 
-  function handleInjectHotItem(item: HotItem) {
-    setInput(
-      `请根据这条 AI HOT 热点继续分析：${item.title}\n\n${item.summary}`,
+  function handleInjectToChat(title: string, summary: string) {
+    void summary;
+    setChatInput(
+      `[⚡全息数据注入] 针对当前热点：“${title}”，请结合 AI HOT 数据库进行深度解析和趋势预测。`,
     );
-    setArmedInjectId(item.id);
+    setIsFlashActive(true);
+
     window.setTimeout(() => {
-      setArmedInjectId((currentId) => (currentId === item.id ? null : currentId));
-    }, 520);
+      setIsFlashActive(false);
+    }, 1000);
+
+    window.setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, 0);
   }
 
   return (
-    <main className="relative h-screen overflow-hidden bg-black text-cyan-300">
+    <main className="relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.07)_1px,transparent_1px)] bg-[size:34px_34px]" />
       <div className="pointer-events-none absolute inset-y-0 left-0 w-24 bg-[repeating-linear-gradient(180deg,rgba(34,211,238,0.16)_0_1px,transparent_1px_12px)] opacity-35" />
       <div className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-[repeating-linear-gradient(180deg,rgba(252,238,10,0.14)_0_1px,transparent_1px_14px)] opacity-30" />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_10%,rgba(34,211,238,0.16),transparent_32%),radial-gradient(circle_at_80%_20%,rgba(217,70,239,0.12),transparent_28%),linear-gradient(180deg,rgba(0,0,0,0.12),rgba(0,0,0,0.92))]" />
 
-      <header className="relative z-10 flex h-16 items-center justify-between border-b border-cyan-500/25 bg-black/82 px-5 backdrop-blur-xl">
+      <header className="relative z-10 flex h-16 shrink-0 items-center justify-between border-b border-cyan-500/30 bg-black/82 px-5 backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-4">
           <div className="grid size-9 place-items-center border border-[#fcee0a]/70 bg-[#fcee0a]/10 text-[#fcee0a] shadow-[0_0_18px_rgba(252,238,10,0.22)]">
             <Sparkles className="size-5" />
@@ -626,6 +635,13 @@ export default function Home() {
             LAST SYNC:{" "}
             <span className="text-[#fcee0a]">{formatSyncTime(lastSyncedAt)}</span>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsGuideOpen(true)}
+            className="matrix-button border border-cyan-500/60 bg-cyan-950/25 px-3 py-2 text-cyan-300 transition hover:border-[#fcee0a] hover:bg-gradient-to-r hover:from-cyan-400 hover:to-[#fcee0a] hover:text-black hover:shadow-[0_0_28px_rgba(34,211,238,0.45)]"
+          >
+            [ ⚡ SYSTEM_MANUAL ]
+          </button>
           <div className="flex items-center gap-2 border border-emerald-400/55 bg-emerald-950/30 px-3 py-2 text-emerald-300 shadow-[0_0_14px_rgba(16,185,129,0.16)]">
             <span className="size-2 animate-pulse bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.95)] [animation-duration:3s]" />
             [ SIGNAL: {signalStatus} ]
@@ -638,8 +654,8 @@ export default function Home() {
         <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-cyan-500 via-fuchsia-500 to-transparent" />
       </header>
 
-      <section className="relative z-10 grid h-[calc(100vh-64px)] min-h-0 grid-rows-[minmax(0,46%)_minmax(0,54%)] overflow-hidden lg:grid-cols-[minmax(380px,48%)_minmax(0,1fr)] lg:grid-rows-1">
-        <section className="flex min-h-0 flex-col border-b border-cyan-900/70 bg-zinc-950/70 lg:border-b-0 lg:border-r">
+      <section className="relative z-10 flex h-[calc(100vh-64px)] w-full flex-row overflow-hidden">
+        <section className="flex h-full w-[45%] min-w-0 flex-col border-r border-cyan-900/70 bg-zinc-950/70">
           <div className="border-b border-zinc-800/90 bg-black/65 px-4 py-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -693,7 +709,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 [scrollbar-color:#22d3ee_#09090b] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-cyan-400/45 [&::-webkit-scrollbar-track]:bg-zinc-950">
             {isHotFeedLoading && hotItems.length === 0 ? (
               <div className="data-loader cyber-card border border-cyan-500/35 bg-black/70 p-8 text-center">
                 <p className="text-lg font-black uppercase text-[#fcee0a]">
@@ -737,7 +753,7 @@ export default function Home() {
                 return (
                   <article
                     key={item.id}
-                    className="cyber-card group relative overflow-hidden border border-zinc-800 bg-zinc-950/82 p-3 transition duration-300 hover:-translate-y-0.5 hover:border-cyan-400 hover:shadow-[0_0_15px_rgba(34,211,238,0.3)]"
+                    className="cyber-card group relative overflow-hidden border border-zinc-800 bg-zinc-950/82 p-3 transition duration-300 hover:-translate-y-0.5 hover:border-cyan-400 hover:shadow-[0_0_15px_rgba(34,211,238,0.2)]"
                   >
                     <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent opacity-0 transition group-hover:opacity-100" />
                     <HotScreenshot url={item.url} title={item.title} />
@@ -754,7 +770,16 @@ export default function Home() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleInjectHotItem(item)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setArmedInjectId(item.id);
+                          window.setTimeout(() => {
+                            setArmedInjectId((currentId) =>
+                              currentId === item.id ? null : currentId,
+                            );
+                          }, 650);
+                          handleInjectToChat(item.title, item.summary);
+                        }}
                         className={`grid size-9 shrink-0 place-items-center border text-cyan-300 transition hover:border-rose-400 hover:bg-rose-500 hover:text-black ${
                           isInjectArmed
                             ? "border-cyan-300 bg-rose-500 text-black shadow-[0_0_22px_rgba(34,211,238,0.65)] animate-pulse"
@@ -808,7 +833,13 @@ export default function Home() {
           </div>
         </section>
 
-        <aside className="flex min-h-0 flex-col border-t border-dashed border-cyan-900/80 bg-black/58 lg:border-l lg:border-t-0">
+        <aside
+          className={`flex h-full w-[55%] min-w-0 flex-col border-l bg-black/58 transition-all duration-500 ${
+            isFlashActive
+              ? "border-emerald-500 shadow-[0_0_24px_rgba(16,185,129,0.5)]"
+              : "border-zinc-800"
+          }`}
+        >
           <div className="flex h-14 shrink-0 items-center justify-between border-b border-cyan-900/70 bg-zinc-950/72 px-5">
             <div className="flex items-center gap-3">
               <span className="border border-cyan-500/45 bg-cyan-500/10 px-3 py-1 text-xs font-black uppercase text-cyan-300">
@@ -829,7 +860,7 @@ export default function Home() {
 
           <div
             ref={chatScrollRef}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 [scrollbar-color:#22d3ee_#09090b] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-cyan-400/35 [&::-webkit-scrollbar-track]:bg-zinc-950"
           >
             {messages.map((message, index) => {
               if (message.role === "assistant" && !message.content) {
@@ -880,7 +911,7 @@ export default function Home() {
                       <span className="relative size-2 bg-[#fcee0a]" />
                     </span>
                     <span className="text-xs font-black uppercase text-cyan-300">
-                      [SYS_STATUS]: AI_THINKING_BY_MATRIX_LOOP...
+                      [SYS_STATUS]: PARSING_AI_HOT_DATABASE_MATRIX...
                     </span>
                     <span className="grid size-7 place-items-center rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px animate-spin">
                       <span className="size-5 rounded-full bg-black" />
@@ -895,15 +926,22 @@ export default function Home() {
             onSubmit={handleSubmit}
             className="shrink-0 border-t border-cyan-900/80 bg-zinc-950/85 p-4"
           >
-            <div className="flex items-center gap-3 border border-cyan-500/35 bg-black/80 px-3 py-2 transition focus-within:border-cyan-300 focus-within:bg-cyan-950/20 focus-within:shadow-[0_0_26px_rgba(34,211,238,0.2)]">
+            <div
+              className={`flex items-center gap-3 border border-cyan-500/35 bg-black/80 px-3 py-2 transition focus-within:border-cyan-300 focus-within:bg-cyan-950/20 focus-within:shadow-[0_0_26px_rgba(34,211,238,0.2)] ${
+                isFlashActive
+                  ? "border-emerald-400 shadow-[0_0_30px_rgba(52,211,153,0.5)]"
+                  : ""
+              }`}
+            >
               <span className="animate-pulse text-2xl font-black text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.85)]">
                 &gt;
               </span>
               <input
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
+                ref={chatInputRef}
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
                 disabled={isLoading}
-                className="min-w-0 flex-1 bg-transparent px-1 py-3 text-sm font-bold text-cyan-100 outline-none placeholder:text-cyan-500/45 disabled:cursor-wait"
+                className="min-w-0 flex-1 border border-[#fcee0a]/30 bg-transparent p-3 font-mono text-sm font-bold text-[#00ffcc] outline-none placeholder-stone-500 focus:border-[#fcee0a] focus:outline-none disabled:cursor-wait"
                 placeholder="输入指令，审问 AI 矩阵..."
               />
               <button
@@ -919,8 +957,70 @@ export default function Home() {
         </aside>
       </section>
 
+      {isGuideOpen ? (
+        <div
+          className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => setIsGuideOpen(false)}
+        >
+          <div
+            className="relative bg-[#0b0c10] border-2 border-[#fcee0a] p-8 max-w-xl w-full rounded-none shadow-[0_0_30px_rgba(252,238,10,0.4)] flex flex-col gap-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="font-mono text-stone-200">
+              {/* 头部标题区 */}
+              <div className="border-b border-[#fcee0a] pb-3 mb-4 flex justify-between items-center">
+                <h2 className="text-xl font-bold text-[#fcee0a] tracking-widest animate-pulse">
+                  [ MATRIX OPERATIONAL MANUAL / 矩阵控制台操作指南 ]
+                </h2>
+              </div>
+
+              {/* 第一部分：格局介绍 */}
+              <div className="mb-6">
+                <h3 className="text-[#00ffcc] font-semibold mb-2">一、全息控制舱格局 (SYSTEM LAYOUT)</h3>
+                <ul className="space-y-2 text-sm pl-4 list-disc marker:text-[#00ffcc]">
+                  <li><strong className="text-white">左侧控制翼 (Left Deck)：</strong>AI HOT 实时动态流。集成了全量数据与精选信息源，鼠标悬停时触发高光矩阵位移。</li>
+                  <li><strong className="text-white">中央主视窗 (Center Feed)：</strong>核心聚焦透视区。呈现当前筛选的最前沿 AI 技术情报与深度日报。</li>
+                  <li><strong className="text-white">右侧交互舱 (Right Command)：</strong>Chatbot 智能问答中枢。支持自然语言检索，内置自动化工具调用分流与 90 秒强制熔断保护机制。</li>
+                </ul>
+              </div>
+
+              {/* 第二部分：操作指引 */}
+              <div className="mb-6">
+                <h3 className="text-[#00ffcc] font-semibold mb-2">二、核心操作指令 (OPERATIONAL GUIDE)</h3>
+                <ol className="space-y-2 text-sm pl-4 list-decimal marker:text-[#00ffcc]">
+                  <li><span className="text-white">情报锁定：</span>点击左侧任意一张新闻卡片，中央主视窗将深度锚定该数据源并展开上下文。</li>
+                  <li><span className="text-white">赛博提问：</span>在右侧问答舱内直接输入如“最近 OpenAI 有什么发布”或“看下昨天的日报”，AI 将自动调用专属 API 进行端点级高精检索。</li>
+                  <li><span className="text-white">安全熔断：</span>若遭遇大模型长循环调用（Agent Loop）或服务器断联，前端会在第 90 秒强制斩断请求并弹出熔断警告，你可随时点击问答舱的“重置矩阵”按钮恢复初始态。</li>
+                </ol>
+              </div>
+
+              {/* 底部关闭区 */}
+              <div className="mt-6 flex justify-end">
+                <button 
+                  onClick={() => setIsGuideOpen(false)}
+                  className="border border-[#fcee0a] text-[#fcee0a] px-6 py-2 hover:bg-[#fcee0a] hover:text-black transition-all duration-300 font-bold tracking-widest text-sm"
+                >
+                  &gt;&gt; 关闭操作指南 CLOSE_MANUAL
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="scanline pointer-events-none absolute inset-0 z-30" />
       <style jsx global>{`
+        @keyframes hud-fade-in {
+          from {
+            opacity: 0;
+            transform: scale(0.985);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+
         @keyframes hud-message-in {
           from {
             opacity: 0;
