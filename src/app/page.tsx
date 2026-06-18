@@ -504,8 +504,63 @@ async function readChatErrorMessage(response: Response): Promise<string> {
   return errorPayload;
 }
 
+function EntryPage({ onEnter }: { onEnter: () => void }) {
+  return (
+    <main className="relative flex flex-col items-center justify-center min-h-screen overflow-hidden bg-black">
+      <div className="pointer-events-none fixed inset-0 bg-[repeating-linear-gradient(180deg,transparent_0_3px,rgba(0,0,0,0.42)_3px_4px)]" />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/picture.png"
+        alt="AI AI 的 AI"
+        className="relative z-10 w-[82vw] max-w-md drop-shadow-[0_0_10px_rgba(34,211,238,0.5)]"
+      />
+      <button
+        type="button"
+        onClick={onEnter}
+        className="relative z-10 mt-8 border border-[#fcee0a] bg-transparent px-8 py-3 text-sm font-black uppercase tracking-[0.22em] text-[#fcee0a] transition hover:bg-[#fcee0a] hover:text-black"
+      >
+        [ ACCESS SYSTEM ]
+      </button>
+    </main>
+  );
+}
+
 export default function Home() {
+  const [isEntered, setIsEntered] = useState(false);
+  const [isDashboardVisible, setIsDashboardVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isEntered) {
+      return;
+    }
+
+    const animationFrameId = window.requestAnimationFrame(() => {
+      setIsDashboardVisible(true);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [isEntered]);
+
+  if (!isEntered) {
+    return <EntryPage onEnter={() => setIsEntered(true)} />;
+  }
+
+  return (
+    <div
+      className={`transition-opacity duration-700 ${
+        isDashboardVisible ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <Dashboard />
+    </div>
+  );
+}
+
+function Dashboard() {
   const [activeDeckTab, setActiveDeckTab] = useState<DeckTabId>("featured");
+  const [activeDeckPulse, setActiveDeckPulse] = useState<DeckTabId | null>(null);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [chatInput, setChatInput] = useState("");
   const [hotFeedStatus, setHotFeedStatus] = useState<HotFeedStatus>("idle");
@@ -772,6 +827,20 @@ export default function Home() {
     }, 0);
   }
 
+  function handleDeckTabChange(tabId: DeckTabId) {
+    setActiveDeckTab(tabId);
+    setActiveDeckPulse(null);
+    window.requestAnimationFrame(() => {
+      setActiveDeckPulse(tabId);
+    });
+
+    window.setTimeout(() => {
+      setActiveDeckPulse((currentTabId) =>
+        currentTabId === tabId ? null : currentTabId,
+      );
+    }, 520);
+  }
+
   return (
     <main className="relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.07)_1px,transparent_1px)] bg-[size:34px_34px]" />
@@ -785,7 +854,7 @@ export default function Home() {
             <Sparkles className="size-5" />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-2xl font-black uppercase text-[#fcee0a] drop-shadow-[0_0_8px_#fcee0a]">
+            <h1 className="glitch-title dashboard-title-fancy truncate text-2xl font-black uppercase text-[#fcee0a]">
               AI AI 的 AI
             </h1>
             <p className="hidden text-xs font-bold uppercase text-cyan-400/70 sm:block">
@@ -847,21 +916,29 @@ export default function Home() {
             <div className="grid grid-cols-3 gap-2">
               {deckTabs.map((tab) => {
                 const isActive = activeDeckTab === tab.id;
+                const isPulsing = activeDeckPulse === tab.id;
 
                 return (
                   <button
                     key={tab.id}
                     type="button"
-                    onClick={() => setActiveDeckTab(tab.id)}
-                    className={`h-11 border px-2 text-xs font-black uppercase transition ${
+                    onClick={() => handleDeckTabChange(tab.id)}
+                    className={`relative h-11 overflow-hidden border px-2 text-xs font-black uppercase transition ${
                       isActive
-                        ? "border-cyan-300 bg-gradient-to-r from-cyan-500 to-blue-600 text-black shadow-[0_0_18px_rgba(34,211,238,0.35)]"
+                        ? "border-cyan-300 bg-gradient-to-r from-cyan-500 via-[#fcee0a] to-blue-600 text-black shadow-[0_0_18px_rgba(34,211,238,0.35)]"
                         : "border-zinc-800 bg-zinc-900/80 text-zinc-400 hover:border-cyan-500/70 hover:text-cyan-300"
-                    }`}
+                    } ${isPulsing ? "deck-tab-glitch" : ""}`}
                   >
-                    <span className="block truncate">[ {tab.label} ]</span>
+                    <span className="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100" />
+                    {isPulsing ? (
+                      <>
+                        <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[#fcee0a] shadow-[0_0_16px_rgba(252,238,10,0.9)]" />
+                        <span className="pointer-events-none absolute inset-0 bg-[repeating-linear-gradient(180deg,rgba(255,255,255,0.34)_0_1px,transparent_1px_6px)] mix-blend-screen" />
+                      </>
+                    ) : null}
+                    <span className="relative block truncate">[ {tab.label} ]</span>
                     <span
-                      className={`block text-[10px] ${
+                      className={`relative block text-[10px] ${
                         isActive ? "text-black/70" : "text-cyan-500/50"
                       }`}
                     >
@@ -1199,6 +1276,138 @@ export default function Home() {
           to {
             opacity: 1;
             transform: translateY(0);
+          }
+        }
+
+        .dashboard-title-fancy {
+          position: relative;
+          display: block;
+          line-height: 1;
+          letter-spacing: 0;
+          text-shadow:
+            0 0 7px rgba(252, 238, 10, 0.95),
+            0 0 18px rgba(252, 238, 10, 0.7),
+            2px 0 rgba(0, 240, 255, 0.72),
+            -2px 0 rgba(255, 0, 76, 0.48);
+          animation: dashboard-title-flicker 3.2s steps(2, end) infinite;
+        }
+
+        .dashboard-title-fancy::before,
+        .dashboard-title-fancy::after {
+          content: "AI AI 的 AI";
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+        }
+
+        .dashboard-title-fancy::before {
+          color: #00f0ff;
+          clip-path: inset(0 0 56% 0);
+          transform: translate(2px, -1px);
+          opacity: 0.78;
+          animation: dashboard-title-slice 2.6s steps(2, end) infinite;
+        }
+
+        .dashboard-title-fancy::after {
+          color: #ff003c;
+          clip-path: inset(48% 0 0 0);
+          transform: translate(-2px, 1px);
+          opacity: 0.48;
+          animation: dashboard-title-slice 3.1s steps(2, end) infinite reverse;
+        }
+
+        @keyframes dashboard-title-flicker {
+          0%,
+          78%,
+          100% {
+            filter: brightness(1);
+          }
+          80% {
+            filter: brightness(1.8) saturate(1.25);
+          }
+          82% {
+            filter: brightness(0.78);
+          }
+          84% {
+            filter: brightness(1.45);
+          }
+        }
+
+        @keyframes dashboard-title-slice {
+          0%,
+          82%,
+          100% {
+            transform: translate(0, 0);
+          }
+          84% {
+            transform: translate(7px, -2px);
+          }
+          86% {
+            transform: translate(-6px, 1px);
+          }
+          88% {
+            transform: translate(4px, 2px);
+          }
+        }
+
+        .deck-tab-glitch {
+          animation: deck-tab-glitch 520ms steps(2, end);
+          box-shadow:
+            0 0 18px rgba(34, 211, 238, 0.7),
+            0 0 34px rgba(252, 238, 10, 0.42);
+        }
+
+        .deck-tab-glitch span {
+          animation: deck-tab-text-jitter 520ms steps(2, end);
+          text-shadow:
+            2px 0 rgba(0, 240, 255, 0.8),
+            -2px 0 rgba(252, 238, 10, 0.7);
+        }
+
+        @keyframes deck-tab-glitch {
+          0% {
+            filter: brightness(1);
+            transform: translate(0);
+            clip-path: inset(0 0 0 0);
+          }
+          12% {
+            filter: brightness(1.8) contrast(1.35);
+            transform: translate(-3px, 1px) skewX(-8deg);
+            clip-path: inset(0 0 54% 0);
+          }
+          24% {
+            transform: translate(4px, -1px) skewX(6deg);
+            clip-path: inset(45% 0 0 0);
+          }
+          38% {
+            filter: brightness(2.2) saturate(1.5);
+            transform: translate(-1px, 0) scaleX(1.04);
+            clip-path: inset(18% 0 24% 0);
+          }
+          58% {
+            transform: translate(2px, 1px);
+            clip-path: inset(0 0 0 0);
+          }
+          100% {
+            filter: brightness(1);
+            transform: translate(0);
+            clip-path: inset(0 0 0 0);
+          }
+        }
+
+        @keyframes deck-tab-text-jitter {
+          0%,
+          100% {
+            transform: translateX(0);
+          }
+          20% {
+            transform: translateX(3px);
+          }
+          42% {
+            transform: translateX(-2px);
+          }
+          64% {
+            transform: translateX(1px);
           }
         }
       `}</style>
